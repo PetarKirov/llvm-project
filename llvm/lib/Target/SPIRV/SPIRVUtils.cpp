@@ -371,7 +371,10 @@ addressSpaceToStorageClass(unsigned AddrSpace, const SPIRVSubtarget &STI) {
   case SPIRVAS::Function:
     return SPIRV::StorageClass::Function;
   case SPIRVAS::CrossWorkgroup:
-    return SPIRV::StorageClass::CrossWorkgroup;
+    if (STI.isKernel())
+      return SPIRV::StorageClass::CrossWorkgroup;
+    else
+      return SPIRV::StorageClass::PhysicalStorageBufferEXT;
   case SPIRVAS::UniformConstant:
     return SPIRV::StorageClass::UniformConstant;
   case SPIRVAS::Workgroup:
