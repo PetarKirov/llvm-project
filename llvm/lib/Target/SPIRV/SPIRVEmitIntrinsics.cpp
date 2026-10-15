@@ -903,8 +903,11 @@ Instruction *SPIRVEmitIntrinsicsImpl::buildLogicalAccessChainFromGEP(
   walkLogicalAccessChain(
       GEP,
       [&Indices, &B](Type *EltType, uint64_t Index) {
+        // 32-bit, as the other indices are: a struct member index must be
+        // a 32-bit constant, and an `Int64` one needs the `Int64`
+        // capability that GLSL ES 1.00 cannot express.
         Indices.push_back(
-            ConstantInt::get(B.getInt64Ty(), Index, /* Signed= */ false));
+            ConstantInt::get(B.getInt32Ty(), Index, /* Signed= */ false));
       },
       [&Indices, &B, &DL, this](Type *EltType, Value *Offset,
                                 uint64_t Multiplier) {
