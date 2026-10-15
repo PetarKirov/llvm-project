@@ -26,6 +26,7 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsSPIRV.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/MathExtras.h"
@@ -157,6 +158,23 @@ unsigned SPIRVGlobalRegistry::adjustOpTypeIntWidth(unsigned Width) const {
   else if (Width <= 128)
     return 128;
   reportFatalUsageError("Unsupported Integer width!");
+}
+
+// LLVM's integers carry no sign, and the backend emits them unsigned. A
+// frontend whose language's plain integers are signed asks for them signed
+// with the module flag `spirv.signed-integers`: a shader translated to GLSL
+// then declares its `int`s as `int`, which is how the host binds a uniform,
+// and a target with no unsigned types (GLSL ES 1.00) sees none. Integers
+// narrower than 32 bits stay unsigned: their literals are written
+// zero-extended, which SPIR-V allows only for an unsigned type (a signed one
+// needs them sign-extended), and no shading language the flag serves has them.
+static bool emitsSignedIntegers(const MachineFunction &MF, unsigned Width) {
+  if (Width < 32)
+    return false;
+  const Module *M = MF.getFunction().getParent();
+  const auto *Flag = mdconst::extract_or_null<ConstantInt>(
+      M->getModuleFlag("spirv.signed-integers"));
+  return Flag && !Flag->isZero();
 }
 
 SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeInt(unsigned Width,
@@ -1046,6 +1064,36 @@ SPIRVGlobalRegistry::getOpTypeOpaque(const StructType *Ty,
       });
 }
 
+// LLVM struct members have no names, but a shader's interface is linked by
+// them: a plain uniform `struct { float gain; }` is set as `light.gain`. A
+// frontend names them in the module's `spirv.MemberNames` metadata, one node
+// per struct, `!{<struct> poison, !"name0", !"name1", ...}`, and each becomes
+// an `OpMemberName`.
+static void buildOpMemberNames(const StructType *Ty, Register ResVReg,
+                               MachineIRBuilder &MIRBuilder) {
+  const Module *M = MIRBuilder.getMF().getFunction().getParent();
+  const NamedMDNode *Names = M->getNamedMetadata("spirv.MemberNames");
+  if (!Names)
+    return;
+  for (const MDNode *Node : Names->operands()) {
+    const auto *Key = Node->getNumOperands() == 0
+                          ? nullptr
+                          : dyn_cast<ConstantAsMetadata>(Node->getOperand(0));
+    if (!Key || Key->getValue()->getType() != Ty)
+      continue;
+    for (unsigned I = 1, E = Node->getNumOperands(); I < E; ++I) {
+      const auto *Name = dyn_cast<MDString>(Node->getOperand(I));
+      if (!Name || Name->getString().empty())
+        continue;
+      auto MIB = MIRBuilder.buildInstr(SPIRV::OpMemberName)
+                     .addUse(ResVReg)
+                     .addImm(I - 1);
+      addStringImm(Name->getString(), MIB);
+    }
+    return;
+  }
+}
+
 SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
     const StructType *Ty, MachineIRBuilder &MIRBuilder,
     SPIRV::AccessQualifier::AccessQualifier AccQual,
@@ -1086,6 +1134,7 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
   Register ResVReg = createTypeVReg(MIRBuilder);
   if (Ty->hasName())
     buildOpName(ResVReg, Ty->getName(), MIRBuilder);
+  buildOpMemberNames(Ty, ResVReg, MIRBuilder);
   if (Ty->isPacked() && !ST.isShader())
     buildOpDecorate(ResVReg, MIRBuilder, SPIRV::Decoration::CPacked, {});
 
@@ -1239,7 +1288,8 @@ SPIRVTypeInst SPIRVGlobalRegistry::createSPIRVType(
   if (auto IType = dyn_cast<IntegerType>(Ty)) {
     const unsigned Width = IType->getBitWidth();
     return Width == 1 ? getOpTypeBool(MIRBuilder)
-                      : getOpTypeInt(Width, MIRBuilder, false);
+                      : getOpTypeInt(Width, MIRBuilder,
+                                     emitsSignedIntegers(MIRBuilder.getMF(), Width));
   }
   if (Ty->isFloatingPointTy()) {
     if (Ty->isFP128Ty() || Ty->isPPC_FP128Ty())
@@ -1951,7 +2001,8 @@ SPIRVGlobalRegistry::getOrCreateSPIRVType(unsigned BitWidth, MachineInstr &I,
                              .addImm(BitWidth);
         // Don't add Encoding to FP type
         if (!Ty->isFloatTy()) {
-          return NewTypeMI.addImm(0);
+          return NewTypeMI.addImm(SPIRVOPcode == SPIRV::OpTypeInt &&
+                                  emitsSignedIntegers(*I.getMF(), BitWidth));
         } else {
           return NewTypeMI;
         }

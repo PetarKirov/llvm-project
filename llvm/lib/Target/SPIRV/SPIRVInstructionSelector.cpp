@@ -4909,6 +4909,25 @@ bool SPIRVInstructionSelector::selectExt(Register ResVReg,
   if (ResType == SrcType)
     return BuildCOPY(ResVReg, SrcReg, I);
 
+  // OpUConvert's result must be unsigned, but a module that asks for signed
+  // integers (`spirv.signed-integers`) has no unsigned type of the result's
+  // width. Sign-extend instead, and clear the bits above the source's width.
+  if (!IsSigned && GR.isScalarOrVectorSigned(ResType)) {
+    Register Extended = MRI->createVirtualRegister(GR.getRegClass(ResType));
+    if (!selectOpWithSrcs(Extended, ResType, I, {SrcReg}, SPIRV::OpSConvert))
+      return false;
+    const APInt Mask =
+        APInt::getLowBitsSet(GR.getScalarOrVectorBitWidth(ResType),
+                             GR.getScalarOrVectorBitWidth(SrcType));
+    const bool IsVector = GR.getScalarOrVectorComponentCount(ResType) > 1;
+    Register MaskReg = IsVector
+                           ? GR.getOrCreateConstVector(Mask, I, ResType, TII)
+                           : GR.getOrCreateConstInt(Mask, I, ResType, TII);
+    return selectOpWithSrcs(
+        ResVReg, ResType, I, {Extended, MaskReg},
+        IsVector ? SPIRV::OpBitwiseAndV : SPIRV::OpBitwiseAndS);
+  }
+
   unsigned Opcode = IsSigned ? SPIRV::OpSConvert : SPIRV::OpUConvert;
   return selectUnOp(ResVReg, ResType, I, Opcode);
 }
