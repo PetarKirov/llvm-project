@@ -678,6 +678,7 @@ let isBarrier = 1, isTerminator = 1, isBranch = 1 in {
 }
 let isReturn = 1, hasDelaySlot = 0, isBarrier = 0, isTerminator = 1, isNotDuplicable = 1 in {
   def OpKill: SimpleOp<"OpKill", 252>;
+  def OpTerminateInvocation: SimpleOp<"OpTerminateInvocation", 4416>;
   def OpReturn: SimpleOp<"OpReturn", 253>;
   def OpReturnValue: Op<254, (outs), (ins ID:$ret), "OpReturnValue $ret">;
   def OpUnreachable: SimpleOp<"OpUnreachable", 255>;

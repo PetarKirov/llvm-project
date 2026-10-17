@@ -228,6 +228,7 @@ private:
 
   bool selectCmp(Register ResVReg, SPIRVTypeInst ResType,
                  unsigned comparisonOpcode, MachineInstr &I) const;
+  bool selectTerminateInvocation(MachineInstr &I) const;
   bool selectDiscard(Register ResVReg, SPIRVTypeInst ResType,
                      MachineInstr &I) const;
 
@@ -4499,6 +4500,28 @@ bool SPIRVInstructionSelector::selectConcatVectors(Register ResVReg,
   return true;
 }
 
+// Ends the invocation: OpTerminateInvocation where SPIR-V 1.6 or
+// SPV_KHR_terminate_invocation provides it, else OpKill, which means the same.
+// Either ends its block, so nothing after it there is emitted.
+bool SPIRVInstructionSelector::selectTerminateInvocation(
+    MachineInstr &I) const {
+  MachineBasicBlock &BB = *I.getParent();
+  const unsigned Opcode =
+      STI.isAtLeastSPIRVVer(llvm::VersionTuple(1, 6)) ||
+              STI.canUseExtension(
+                  SPIRV::Extension::SPV_KHR_terminate_invocation)
+          ? SPIRV::OpTerminateInvocation
+          : SPIRV::OpKill;
+  for (MachineInstr &ToErase : make_early_inc_range(
+           make_range(std::next(I.getIterator()), BB.instr_end()))) {
+    GR.invalidateMachineInstr(&ToErase);
+    ToErase.eraseFromParent();
+  }
+  BuildMI(BB, I, I.getDebugLoc(), TII.get(Opcode))
+      .constrainAllUses(TII, TRI, RBI);
+  return true;
+}
+
 bool SPIRVInstructionSelector::selectDiscard(Register ResVReg,
                                              SPIRVTypeInst ResType,
                                              MachineInstr &I) const {
@@ -5956,6 +5979,8 @@ bool SPIRVInstructionSelector::selectIntrinsic(Register ResVReg,
   case Intrinsic::spv_pushconstant_getpointer: {
     return selectPushConstantGetPointer(ResVReg, ResType, I);
   }
+  case Intrinsic::spv_terminate_invocation:
+    return selectTerminateInvocation(I);
   case Intrinsic::spv_discard: {
     return selectDiscard(ResVReg, ResType, I);
   }

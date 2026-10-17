@@ -431,6 +431,10 @@ let TargetPrefix = "spv" in {
         DefaultAttrsIntrinsic<[], [], [IntrConvergent]>;
 
   def int_spv_discard : DefaultAttrsIntrinsic<[], [], []>;
+  // Ends the invocation, as GLSL's `discard` does (OpTerminateInvocation);
+  // `int_spv_discard` may instead demote it to a helper invocation.
+  def int_spv_terminate_invocation
+      : DefaultAttrsIntrinsic<[], [], [IntrNoReturn]>;
 
   def int_spv_ddx
       : DefaultAttrsIntrinsic<[llvm_anyfloat_ty], [LLVMMatchType<0>],
