@@ -441,6 +441,21 @@ bool expectIgnoredInIRTranslation(const Instruction *I) {
                                  Intrinsic::spv_resource_getpointer>());
 }
 
+// A string a resource is named by is read at instruction selection, for the
+// resource variable's OpName; it is not a value of the program. Initialising
+// it would materialise it as an array of bytes, and a shader would need Int8.
+static bool isOnlyResourceName(const GlobalVariable &GV) {
+  if (GV.use_empty())
+    return false;
+  return all_of(GV.uses(), [](const Use &U) {
+    const auto *II = dyn_cast<IntrinsicInst>(U.getUser());
+    return II && U.getOperandNo() == 4 &&
+           (II->getIntrinsicID() == Intrinsic::spv_resource_handlefrombinding ||
+            II->getIntrinsicID() ==
+                Intrinsic::spv_resource_handlefromimplicitbinding);
+  });
+}
+
 // Returns the source pointer from `I` ignoring intermediate ptrcast.
 Value *getPointerRoot(Value *I) {
   Value *V;
@@ -3058,7 +3073,7 @@ void SPIRVEmitIntrinsicsImpl::processGlobalValue(GlobalVariable &GV,
   deduceElementTypeHelper(&GV, false);
 
   Constant *Init = nullptr;
-  if (hasInitializer(&GV)) {
+  if (hasInitializer(&GV) && !isOnlyResourceName(GV)) {
     Init = GV.getInitializer();
     Value *InitOp = Init;
     if (isa<UndefValue>(Init) && Init->getType()->isAggregateType()) {
