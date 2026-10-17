@@ -1179,13 +1179,17 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypePointer(
   if (!Reg.isValid())
     Reg = createTypeVReg(MIRBuilder);
 
-  return createConstOrTypeAtFunctionEntry(MIRBuilder, [&](MachineIRBuilder
-                                                              &MIRBuilder) {
-    return MIRBuilder.buildInstr(SPIRV::OpTypePointer)
-        .addDef(Reg)
-        .addImm(static_cast<uint32_t>(SC))
-        .addUse(getSPIRVTypeID(ElemType));
-  });
+  SPIRVTypeInst PtrType = createConstOrTypeAtFunctionEntry(
+      MIRBuilder, [&](MachineIRBuilder &MIRBuilder) {
+        return MIRBuilder.buildInstr(SPIRV::OpTypePointer)
+            .addDef(Reg)
+            .addImm(static_cast<uint32_t>(SC))
+            .addUse(getSPIRVTypeID(ElemType));
+      });
+  if (ST.isShader())
+    addPhysicalPointerStride(Reg, SC, getTypeForSPIRVType(ElemType),
+                             MIRBuilder);
+  return PtrType;
 }
 
 SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeFunction(
@@ -2185,6 +2189,9 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOrCreateSPIRVPointerTypeInternal(
             .addImm(static_cast<uint32_t>(SC))
             .addUse(getSPIRVTypeID(BaseType));
       });
+  if (ST.isShader())
+    addPhysicalPointerStride(NewMI->getOperand(0).getReg(), SC,
+                             PointerElementType, MIRBuilder);
   add(PointerElementType, AddressSpace, NewMI);
   return finishCreatingSPIRVType(Ty, NewMI);
 }
@@ -2452,6 +2459,17 @@ void SPIRVGlobalRegistry::addStructOffsetDecorations(
     buildOpMemberDecorate(Reg, MIRBuilder, SPIRV::Decoration::Offset, I,
                           {static_cast<uint32_t>(Offsets[I])});
   }
+}
+
+void SPIRVGlobalRegistry::addPhysicalPointerStride(
+    Register Reg, SPIRV::StorageClass::StorageClass SC,
+    const Type *ElementType, MachineIRBuilder &MIRBuilder) {
+  if (SC != SPIRV::StorageClass::PhysicalStorageBufferEXT || !ElementType ||
+      !ElementType->isSized())
+    return;
+  buildOpDecorate(Reg, MIRBuilder, SPIRV::Decoration::ArrayStride,
+                  {static_cast<uint32_t>(DL.getTypeAllocSize(
+                      const_cast<Type *>(ElementType)))});
 }
 
 void SPIRVGlobalRegistry::addArrayStrideDecorations(

@@ -361,6 +361,7 @@ private:
                         MachineInstr &I) const;
   bool selectInsertElt(Register ResVReg, SPIRVTypeInst ResType,
                        MachineInstr &I) const;
+  bool offsetsPhysicalPointer(SPIRVTypeInst ResType, MachineInstr &I) const;
   bool selectGEP(Register ResVReg, SPIRVTypeInst ResType,
                  MachineInstr &I) const;
 
@@ -1960,7 +1961,8 @@ bool SPIRVInstructionSelector::selectBitcast(Register ResVReg,
 static void
 addMemoryOperands(const MachineMemOperand *MemOp, MachineInstrBuilder &MIB,
                   MachineIRBuilder &MIRBuilder, SPIRVGlobalRegistry &GR,
-                  std::optional<Align> AlignOverride = std::nullopt) {
+                  std::optional<Align> AlignOverride = std::nullopt,
+                  bool PhysicalPointer = false) {
   const SPIRVSubtarget *ST =
       static_cast<const SPIRVSubtarget *>(&MIRBuilder.getMF().getSubtarget());
   uint32_t SpvMemOp = static_cast<uint32_t>(SPIRV::MemoryOperand::None);
@@ -1968,8 +1970,9 @@ addMemoryOperands(const MachineMemOperand *MemOp, MachineInstrBuilder &MIB,
     SpvMemOp |= static_cast<uint32_t>(SPIRV::MemoryOperand::Volatile);
   if (MemOp->isNonTemporal())
     SpvMemOp |= static_cast<uint32_t>(SPIRV::MemoryOperand::Nontemporal);
-  // Aligned memory operand requires the Kernel capability (or PhysicalStorageBuffer in shader).
-  if ((!ST->isShader() || MemOp->getAddrSpace() == 1) && MemOp->getAlign().value())
+  // Aligned memory operand requires the Kernel capability, but Vulkan requires
+  // it of every access through a buffer device address.
+  if ((!ST->isShader() || PhysicalPointer) && MemOp->getAlign().value())
     SpvMemOp |= static_cast<uint32_t>(SPIRV::MemoryOperand::Aligned);
 
   [[maybe_unused]] MachineInstr *AliasList = nullptr;
@@ -2000,15 +2003,27 @@ addMemoryOperands(const MachineMemOperand *MemOp, MachineInstrBuilder &MIB,
   }
 }
 
-static void addMemoryOperands(uint64_t Flags, MachineInstrBuilder &MIB) {
+// The memory operands of an aggregate load or store, lowered to an intrinsic
+// that carries its flags and alignment. Vulkan requires every access through
+// a buffer device address (PhysicalStorageBuffer) to be Aligned.
+static void addMemoryOperands(uint64_t Flags, uint64_t Alignment,
+                              SPIRV::StorageClass::StorageClass PtrSC,
+                              MachineInstrBuilder &MIB) {
   uint32_t SpvMemOp = static_cast<uint32_t>(SPIRV::MemoryOperand::None);
   if (Flags & MachineMemOperand::Flags::MOVolatile)
     SpvMemOp |= static_cast<uint32_t>(SPIRV::MemoryOperand::Volatile);
   if (Flags & MachineMemOperand::Flags::MONonTemporal)
     SpvMemOp |= static_cast<uint32_t>(SPIRV::MemoryOperand::Nontemporal);
+  const bool IsAligned =
+      PtrSC == SPIRV::StorageClass::PhysicalStorageBufferEXT && Alignment;
+  if (IsAligned)
+    SpvMemOp |= static_cast<uint32_t>(SPIRV::MemoryOperand::Aligned);
 
-  if (SpvMemOp != static_cast<uint32_t>(SPIRV::MemoryOperand::None))
+  if (SpvMemOp != static_cast<uint32_t>(SPIRV::MemoryOperand::None)) {
     MIB.addImm(SpvMemOp);
+    if (IsAligned)
+      MIB.addImm(Alignment);
+  }
 }
 
 bool SPIRVInstructionSelector::selectLoad(Register ResVReg,
@@ -2055,9 +2070,14 @@ bool SPIRVInstructionSelector::selectLoad(Register ResVReg,
     assert(I.getOpcode() == TargetOpcode::G_INTRINSIC_W_SIDE_EFFECTS ||
            I.getOpcode() ==
                TargetOpcode::G_INTRINSIC_CONVERGENT_W_SIDE_EFFECTS);
-    addMemoryOperands(I.getOperand(2 + OpOffset).getImm(), MIB);
+    addMemoryOperands(I.getOperand(2 + OpOffset).getImm(),
+                      I.getOperand(3 + OpOffset).getImm(),
+                      GR.getPointerStorageClass(Ptr), MIB);
   } else {
-    addMemoryOperands(*I.memoperands_begin(), MIB, MIRBuilder, GR);
+    addMemoryOperands(*I.memoperands_begin(), MIB, MIRBuilder, GR,
+                      /*AlignOverride=*/std::nullopt,
+                      GR.getPointerStorageClass(Ptr) ==
+                          SPIRV::StorageClass::PhysicalStorageBufferEXT);
   }
   MIB.constrainAllUses(TII, TRI, RBI);
   return true;
@@ -2290,9 +2310,13 @@ bool SPIRVInstructionSelector::selectStore(MachineInstr &I) const {
     assert(I.getOpcode() == TargetOpcode::G_INTRINSIC_W_SIDE_EFFECTS ||
            I.getOpcode() ==
                TargetOpcode::G_INTRINSIC_CONVERGENT_W_SIDE_EFFECTS);
-    addMemoryOperands(I.getOperand(2 + OpOffset).getImm(), MIB);
+    addMemoryOperands(I.getOperand(2 + OpOffset).getImm(),
+                      I.getOperand(3 + OpOffset).getImm(),
+                      GR.getPointerStorageClass(Ptr), MIB);
   } else {
-    addMemoryOperands(*I.memoperands_begin(), MIB, MIRBuilder, GR);
+    addMemoryOperands(*I.memoperands_begin(), MIB, MIRBuilder, GR,
+                      /*AlignOverride=*/std::nullopt,
+                      PtrSC == SPIRV::StorageClass::PhysicalStorageBufferEXT);
   }
   MIB.constrainAllUses(TII, TRI, RBI);
   return true;
@@ -5151,6 +5175,14 @@ bool SPIRVInstructionSelector::selectExtractElt(Register ResVReg,
   return true;
 }
 
+bool SPIRVInstructionSelector::offsetsPhysicalPointer(SPIRVTypeInst ResType,
+                                                      MachineInstr &I) const {
+  if (GR.getPointerStorageClass(ResType) !=
+      SPIRV::StorageClass::PhysicalStorageBufferEXT)
+    return false;
+  return !getImm(I.getOperand(4), MRI) || foldImm(I.getOperand(4), MRI) != 0;
+}
+
 bool SPIRVInstructionSelector::selectGEP(Register ResVReg,
                                          SPIRVTypeInst ResType,
                                          MachineInstr &I) const {
@@ -5176,7 +5208,15 @@ bool SPIRVInstructionSelector::selectGEP(Register ResVReg,
     // only relies on PtrAccessChain, so we'll try not to deviate. For Vulkan
     // however, we have to use Op[InBounds]AccessChain.
     // FIXME: fix llvm-spirv.
-    if (STI.isLogicalSPIRV()) {
+    //
+    // A PhysicalStorageBuffer pointer is an address even in logical SPIR-V: a
+    // GEP whose first index is not a constant zero offsets it, as in `p[i]`,
+    // which only Op[InBounds]PtrAccessChain expresses.
+    // Its in-bounds variant needs the Addresses capability, which a shader
+    // cannot declare.
+    if (STI.isLogicalSPIRV() && offsetsPhysicalPointer(ResType, I)) {
+      Opcode = SPIRV::OpPtrAccessChain;
+    } else if (STI.isLogicalSPIRV()) {
       Opcode =
           IsGEPInBounds ? SPIRV::OpInBoundsAccessChain : SPIRV::OpAccessChain;
     } else {
@@ -5231,19 +5271,12 @@ bool SPIRVInstructionSelector::selectGEP(Register ResVReg,
        Opcode == SPIRV::OpUntypedAccessChainKHR ||
        Opcode == SPIRV::OpUntypedInBoundsAccessChainKHR);
 
-  assert((!IsAccessChainOpcode ||
-          GR.getPointerStorageClass(ResType) ==
-              SPIRV::StorageClass::PhysicalStorageBufferEXT ||
-          (getImm(I.getOperand(4), MRI) && foldImm(I.getOperand(4), MRI) == 0)) &&
-         "Cannot translate GEP to OpAccessChain. First index must be 0.");
+  assert((!IsAccessChainOpcode || (getImm(I.getOperand(4), MRI) &&
+                                   foldImm(I.getOperand(4), MRI) == 0)) &&
+         "Cannot translate GEP to OpAccessChain.");
 
   // Adding indices.
-  const unsigned StartingIndex =
-      (IsAccessChainOpcode &&
-       GR.getPointerStorageClass(ResType) !=
-           SPIRV::StorageClass::PhysicalStorageBufferEXT)
-          ? 5
-          : 4;
+  const unsigned StartingIndex = IsAccessChainOpcode ? 5 : 4;
   for (unsigned i = StartingIndex; i < I.getNumExplicitOperands(); ++i)
     Res.addUse(I.getOperand(i).getReg());
   Res.constrainAllUses(TII, TRI, RBI);

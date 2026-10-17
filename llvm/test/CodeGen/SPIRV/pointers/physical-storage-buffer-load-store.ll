@@ -25,13 +25,14 @@
 ; CHECK-NOT: OpPtrAccessChain
 
 %struct.elem = type { float }
+@name = private unnamed_addr constant [4 x i8] c"buf\00"
 
 define void @main() #0 {
 entry:
   ; Bind a VulkanBuffer of floats at set=0, binding=0
   %buf = call target("spirv.VulkanBuffer", [0 x %struct.elem], 12, 0)
       @llvm.spv.resource.handlefrombinding.tspirv.VulkanBuffer_a0s_struct.elems_12_0t(
-          i32 0, i32 0, i32 1, i32 0, ptr null)
+          i32 0, i32 0, i32 1, i32 0, ptr @name)
 
   ; Get pointer to element [0] of the buffer
   %ptr = call noundef align 4 dereferenceable(4) ptr addrspace(11)

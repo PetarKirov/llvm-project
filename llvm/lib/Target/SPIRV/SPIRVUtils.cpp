@@ -371,10 +371,12 @@ addressSpaceToStorageClass(unsigned AddrSpace, const SPIRVSubtarget &STI) {
   case 0:
     return SPIRV::StorageClass::Function;
   case 1:
-    if (STI.isKernel())
-      return SPIRV::StorageClass::CrossWorkgroup;
-    else
-      return SPIRV::StorageClass::PhysicalStorageBufferEXT;
+    // A shader module that asks for it (`spirv.physical-storage-buffer`) has
+    // buffer device addresses for global pointers; anything else keeps
+    // OpenCL's CrossWorkgroup.
+    return STI.usesPhysicalStorageBuffer()
+               ? SPIRV::StorageClass::PhysicalStorageBufferEXT
+               : SPIRV::StorageClass::CrossWorkgroup;
   case 2:
     return SPIRV::StorageClass::UniformConstant;
   case 3:
