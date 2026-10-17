@@ -1,11 +1,10 @@
-; RUN: llc -O0 -verify-machineinstrs -mtriple=spirv1.5-vulkan-library %s -o - | FileCheck %s
+; RUN: llc -O0 -verify-machineinstrs -mtriple=spirv1.5-vulkan-library %s -o - | FileCheck %s --implicit-check-not="OpCapability Int8"
 ; RUN: %if spirv-tools %{ llc -O0 -mtriple=spirv1.5-vulkan-library %s -o - -filetype=obj | spirv-val %}
 
 @.str.b0 = private unnamed_addr constant [3 x i8] c"B0\00", align 1
 
 ; CHECK-DAG: OpCapability Shader
 ; CHECK-DAG: OpCapability Image1D
-; CHECK-DAG: OpCapability Int8
 ; CHECK-NOT: OpCapability
 
 ; CHECK-DAG: OpDecorate [[Var:%[0-9]+]] DescriptorSet 3

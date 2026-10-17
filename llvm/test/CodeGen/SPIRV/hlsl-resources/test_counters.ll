@@ -1,10 +1,9 @@
-; RUN: llc -O0 -verify-machineinstrs -mtriple=spirv-vulkan-library %s -o - | FileCheck %s
+; RUN: llc -O0 -verify-machineinstrs -mtriple=spirv-vulkan-library %s -o - | FileCheck %s --implicit-check-not="OpCapability Int8"
 ; RUN: %if spirv-tools %{ llc -O0 -mtriple=spirv-vulkan-library %s -o - -filetype=obj | spirv-val --target-env vulkan1.3 %}
 
 ; ModuleID = 'test_counters.hlsl'
 source_filename = "test_counters.hlsl"
 
-; CHECK: OpCapability Int8
 ; CHECK-DAG: OpName [[OutputBuffer:%[0-9]+]] "OutputBuffer"
 ; CHECK-DAG: OpName [[InputBuffer:%[0-9]+]] "InputBuffer"
 ; CHECK-DAG: OpName [[OutputBufferCounter:%[0-9]+]] "OutputBuffer.counter"
