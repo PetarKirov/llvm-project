@@ -546,6 +546,12 @@ private:
 
   void addStructOffsetDecorations(Register Reg, StructType *Ty,
                                   MachineIRBuilder &MIRBuilder);
+  // A PhysicalStorageBuffer pointer is indexed with OpPtrAccessChain, which a
+  // shader may apply only to a pointer type decorated with ArrayStride.
+  void addPhysicalPointerStride(Register Reg,
+                                SPIRV::StorageClass::StorageClass SC,
+                                const Type *ElementType,
+                                MachineIRBuilder &MIRBuilder);
   void addArrayStrideDecorations(Register Reg, Type *ElementType,
                                  MachineIRBuilder &MIRBuilder);
 

@@ -124,9 +124,6 @@ SPIRVSubtarget &SPIRVSubtarget::initSubtargetDependencies(StringRef CPU,
 }
 
 bool SPIRVSubtarget::canUseExtension(SPIRV::Extension::Extension E) const {
-  if (isShader() && (E == SPIRV::Extension::SPV_KHR_physical_storage_buffer ||
-                     E == SPIRV::Extension::SPV_EXT_physical_storage_buffer))
-    return true;
   return AvailableExtensions.contains(E);
 }
 
@@ -197,6 +194,7 @@ void SPIRVSubtarget::setEnv(SPIRVEnvType E) {
 
 void SPIRVSubtarget::resolveEnvFromModule(const Module &M) {
   *GR = SPIRVGlobalRegistry(M.getDataLayout());
+  resolvePhysicalStorageBuffer(M);
 
   if (Env != Unknown) {
     assert(!(isKernel() && any_of(M,
@@ -254,4 +252,18 @@ void SPIRVSubtarget::initAvailableExtensions(
   }
 
   accountForAMDShaderTrinaryMinmax();
+}
+
+// A shader's address space 1 is CrossWorkgroup unless its module asks, with
+// the module flag `spirv.physical-storage-buffer`, for buffer device addresses
+// (SPV_KHR_physical_storage_buffer): the pointers a host hands a Vulkan
+// shader in a buffer, as a GPU language whose global pointers are real
+// addresses needs.
+void SPIRVSubtarget::resolvePhysicalStorageBuffer(const Module &M) {
+  const auto *Flag = mdconst::extract_or_null<ConstantInt>(
+      M.getModuleFlag("spirv.physical-storage-buffer"));
+  PhysicalStorageBuffer = Flag && !Flag->isZero();
+  if (PhysicalStorageBuffer)
+    AvailableExtensions.insert(
+        SPIRV::Extension::SPV_KHR_physical_storage_buffer);
 }

@@ -384,6 +384,12 @@ class SPIRVEmitIntrinsicsImpl
   Type *getGEPTypeLogical(GetElementPtrInst *GEP);
 
   Instruction *buildLogicalAccessChainFromGEP(GetElementPtrInst &GEP);
+  // A byte-addressing GEP on a buffer device address, rewritten over the
+  // pointee type; null if its offset is not one the rewrite can express.
+  Instruction *buildPhysicalPointerGEP(GetElementPtrInst &GEP);
+  // The pointee type of what buildPhysicalPointerGEP builds; null where it
+  // would build nothing.
+  Type *getPhysicalPointerGEPType(GetElementPtrInst &GEP);
 
 public:
   SPIRVEmitIntrinsicsImpl(const SPIRVTargetMachine &TM) : TM(TM) {}
@@ -945,6 +951,89 @@ Instruction *SPIRVEmitIntrinsicsImpl::buildLogicalAccessChainFromGEP(
   return NewI;
 }
 
+// A buffer device address (PhysicalStorageBuffer) is a pointer in its own
+// right: an offset of whole pointees steps the pointer, as OpPtrAccessChain's
+// Element does, and only what is left over indexes into the pointee. The
+// logical rewrite above starts every chain inside the pointee instead, which
+// is right for a resource but drops `p[i]` on a pointer to a scalar.
+Instruction *
+SPIRVEmitIntrinsicsImpl::buildPhysicalPointerGEP(GetElementPtrInst &GEP) {
+  auto &DL = CurrF->getDataLayout();
+  const uint64_t Multiplier =
+      *getByteAddressingMultiplier(GEP.getSourceElementType());
+  Type *Pointee = deduceElementType(GEP.getPointerOperand(), true);
+  if (!Pointee || !Pointee->isSized() || GEP.getNumIndices() != 1)
+    return nullptr;
+  const int64_t Size = DL.getTypeAllocSize(Pointee);
+  if (Size == 0)
+    return nullptr;
+
+  IRBuilder<> B(GEP.getParent());
+  B.SetInsertPoint(&GEP);
+  Value *Offset = *GEP.idx_begin();
+  std::vector<Value *> Indices;
+  if (auto *CI = dyn_cast<ConstantInt>(Offset)) {
+    const int64_t Bytes = CI->getSExtValue() * static_cast<int64_t>(Multiplier);
+    const int64_t Remainder = Bytes - (Bytes / Size) * Size;
+    if (Remainder < 0)
+      return nullptr;
+    Indices.push_back(ConstantInt::get(Offset->getType(), Bytes / Size,
+                                       /* Signed= */ true));
+    if (Remainder > 0 &&
+        walkLogicalAccessChainConstant(
+            Pointee, Remainder, [&Indices, &B](Type *, uint64_t Index) {
+              Indices.push_back(ConstantInt::get(B.getInt32Ty(), Index));
+            }))
+      return nullptr;
+  } else {
+    if (Multiplier % Size != 0)
+      return nullptr;
+    Value *Index = Offset;
+    if (Multiplier != static_cast<uint64_t>(Size)) {
+      Index = B.CreateMul(Offset, ConstantInt::get(Offset->getType(),
+                                                   Multiplier / Size));
+      insertAssignTypeIntrs(cast<Instruction>(Index), B);
+    }
+    Indices.push_back(Index);
+  }
+
+  SmallVector<Type *, 2> Types = {GEP.getType(), GEP.getOperand(0)->getType()};
+  SmallVector<Value *, 4> Args;
+  Args.push_back(B.getInt1(GEP.isInBounds()));
+  Args.push_back(GEP.getOperand(0));
+  llvm::append_range(Args, Indices);
+  Instruction *NewI =
+      B.CreateIntrinsicWithoutFolding(Intrinsic::spv_gep, {Types}, {Args});
+  replaceAllUsesWithAndErase(B, &GEP, NewI);
+  return NewI;
+}
+
+Type *SPIRVEmitIntrinsicsImpl::getPhysicalPointerGEPType(GetElementPtrInst &GEP) {
+  auto &DL = CurrF->getDataLayout();
+  const uint64_t Multiplier =
+      *getByteAddressingMultiplier(GEP.getSourceElementType());
+  Type *Pointee = deduceElementType(GEP.getPointerOperand(), true);
+  if (!Pointee || !Pointee->isSized() || GEP.getNumIndices() != 1)
+    return nullptr;
+  const int64_t Size = DL.getTypeAllocSize(Pointee);
+  if (Size == 0)
+    return nullptr;
+  Value *Offset = *GEP.idx_begin();
+  auto *CI = dyn_cast<ConstantInt>(Offset);
+  if (!CI)
+    return Multiplier % Size == 0 ? Pointee : nullptr;
+  const int64_t Bytes = CI->getSExtValue() * static_cast<int64_t>(Multiplier);
+  const int64_t Remainder = Bytes - (Bytes / Size) * Size;
+  if (Remainder < 0)
+    return nullptr;
+  Type *Ty = Pointee;
+  if (Remainder > 0 && walkLogicalAccessChainConstant(
+                           Pointee, Remainder,
+                           [&Ty](Type *EltType, uint64_t) { Ty = EltType; }))
+    return nullptr;
+  return Ty;
+}
+
 Type *SPIRVEmitIntrinsicsImpl::getGEPTypeLogical(GetElementPtrInst *GEP) {
 
   Type *CurType = GEP->getResultElementType();
@@ -959,6 +1048,10 @@ Type *SPIRVEmitIntrinsicsImpl::getGEPTypeLogical(GetElementPtrInst *GEP) {
 Type *SPIRVEmitIntrinsicsImpl::getGEPType(GetElementPtrInst *Ref) {
   if (getByteAddressingMultiplier(Ref->getSourceElementType()) &&
       TM.getSubtargetImpl()->isLogicalSPIRV()) {
+    if (TM.getSubtargetImpl()->usesPhysicalStorageBuffer() &&
+        Ref->getPointerAddressSpace() == 1)
+      if (Type *Ty = getPhysicalPointerGEPType(*Ref))
+        return Ty;
     return getGEPTypeLogical(Ref);
   }
 
@@ -2135,6 +2228,10 @@ SPIRVEmitIntrinsicsImpl::visitGetElementPtrInst(GetElementPtrInst &I) {
     // If the GEP is doing byte addressing, try to rebuild the full access chain
     // from the type of the pointer.
     if (getByteAddressingMultiplier(I.getSourceElementType())) {
+      if (TM.getSubtargetImpl()->usesPhysicalStorageBuffer() &&
+          I.getPointerAddressSpace() == 1)
+        if (Instruction *NewI = buildPhysicalPointerGEP(I))
+          return NewI;
       return buildLogicalAccessChainFromGEP(I);
     }
 
