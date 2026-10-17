@@ -40,6 +40,8 @@ static const StringMap<SPIRV::Extension::Extension> SPIRVExtensionMap = {
      SPIRV::Extension::Extension::SPV_EXT_arithmetic_fence},
     {"SPV_EXT_demote_to_helper_invocation",
      SPIRV::Extension::Extension::SPV_EXT_demote_to_helper_invocation},
+    {"SPV_KHR_terminate_invocation",
+     SPIRV::Extension::Extension::SPV_KHR_terminate_invocation},
     {"SPV_EXT_descriptor_indexing",
      SPIRV::Extension::Extension::SPV_EXT_descriptor_indexing},
     {"SPV_EXT_fragment_fully_covered",

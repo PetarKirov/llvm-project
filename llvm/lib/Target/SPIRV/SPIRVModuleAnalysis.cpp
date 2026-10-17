@@ -2540,6 +2540,11 @@ void addInstrRequirements(const MachineInstr &MI,
     }
     break;
   }
+  case SPIRV::OpTerminateInvocation:
+    Reqs.addCapability(SPIRV::Capability::Shader);
+    if (!ST.isAtLeastSPIRVVer(llvm::VersionTuple(1, 6)))
+      Reqs.addExtension(SPIRV::Extension::SPV_KHR_terminate_invocation);
+    break;
   case SPIRV::OpKill: {
     Reqs.addCapability(SPIRV::Capability::Shader);
   } break;
