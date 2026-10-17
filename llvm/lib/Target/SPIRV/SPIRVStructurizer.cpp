@@ -14,10 +14,13 @@
 #include "SPIRVUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
@@ -1024,6 +1027,89 @@ class SPIRVStructurizerImpl {
     return Modified;
   }
 
+  // Gives a conditional region its own exit when its exits meet those of an
+  // enclosing one.
+  //
+  // Early returns from nested conditions all land in one block:
+  //   entry: br %c0, %exit, %a      a: br %c1, %exit, %b
+  //   b: br %c2, %c, %exit          c: br %exit
+  // Every header here is immediately post-dominated by %exit, but a selection
+  // construct needs a merge block of its own, and the later steps, which
+  // place merges at the immediate dominator of each block with several
+  // predecessors, would leave %b's construct escaping %a's. So, innermost
+  // first, the edges into the shared post-dominator from a nested header's
+  // region are routed through a new block, which becomes its merge:
+  //   b: br %c2, %c, %b.merge   c: br %b.merge   b.merge: br %exit
+  // and likewise for %a. Runs before any merge instruction exists, on a CFG
+  // without PHI nodes.
+  bool nestSharedPostDominators(Function &F) {
+    bool Modified = false;
+    for (bool Changed = true; Changed;) {
+      Changed = false;
+      DominatorTree DT(F);
+      PostDominatorTree PDT(F);
+      auto PostDominator = [&PDT](BasicBlock *BB) -> BasicBlock * {
+        DomTreeNode *Node = PDT.getNode(BB);
+        return Node && Node->getIDom() ? Node->getIDom()->getBlock() : nullptr;
+      };
+
+      for (DomTreeNode *Node : post_order(DT.getRootNode())) {
+        BasicBlock *BB = Node->getBlock();
+        if (succ_size(BB) < 2)
+          continue;
+        BasicBlock *Exit = PostDominator(BB);
+        if (!Exit || isa<PHINode>(Exit->begin()))
+          continue;
+        Loop *L = LI.getLoopFor(BB);
+        if (L != LI.getLoopFor(Exit) || LI.isLoopHeader(Exit))
+          continue;
+
+        bool Shared = false;
+        for (DomTreeNode *Up = Node->getIDom(); Up && !Shared;
+             Up = Up->getIDom()) {
+          BasicBlock *Header = Up->getBlock();
+          if (L && !L->contains(Header))
+            break;
+          Shared = succ_size(Header) >= 2 && PostDominator(Header) == Exit;
+        }
+        if (!Shared)
+          continue;
+
+        // Only a region that reaches the exit through blocks it dominates
+        // can be given its own: a path through a block shared with another
+        // region (`a: br %c, %d, %exit` with %d also reached from elsewhere)
+        // would keep the exit as its post-dominator however it is split.
+        SmallSetVector<BasicBlock *, 4> Inner;
+        bool Nested = true;
+        visit(*BB, [&](BasicBlock *Block) {
+          if (Block == Exit || !Nested)
+            return false;
+          if (!DT.dominates(BB, Block)) {
+            Nested = false;
+            return false;
+          }
+          if (is_contained(successors(Block), Exit))
+            Inner.insert(Block);
+          return true;
+        });
+        if (!Nested || Inner.empty())
+          continue;
+
+        BasicBlock *NewMerge = BasicBlock::Create(
+            F.getContext(), BB->getName() + ".merge", &F, Exit);
+        for (BasicBlock *Pred : Inner)
+          replaceBranchTargets(Pred, Exit, NewMerge);
+        IRBuilder<> Builder(NewMerge);
+        Builder.CreateBr(Exit);
+        if (L)
+          L->addBasicBlockToLoop(NewMerge, LI);
+        Modified = Changed = true;
+        break;
+      }
+    }
+    return Modified;
+  }
+
 public:
   SPIRVStructurizerImpl(LoopInfo &LI, ConvergenceRegionInfo &RegionInfo)
       : LI(LI), RegionInfo(RegionInfo) {}
@@ -1040,6 +1126,10 @@ public:
     // block. It also allows switched to have a single default, or just one
     // case. Cleaning this up now.
     Modified |= simplifyBranches(F);
+
+    // Nested conditions whose exits meet an enclosing one's get exits of
+    // their own, so each selection can have its own merge block.
+    Modified |= nestSharedPostDominators(F);
 
     // At this state, we should have a reducible CFG with cycles.
     // STEP 1: Adding OpLoopMerge instructions to loop headers.
