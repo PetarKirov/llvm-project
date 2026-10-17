@@ -49,6 +49,8 @@ sw.epilog:
   ret i32 %result
 }
 
+; Each condition of the chain is nested in the previous one's else branch,
+; with a merge of its own.
 ; CHECK: %[[BREAKS]] = OpFunction
 ; CHECK-NOT: OpSelectionMerge
 ; CHECK: OpSelectionMerge %[[BREAK_EPILOG:[0-9]+]] None
@@ -56,23 +58,23 @@ sw.epilog:
 ; CHECK: %[[BREAK_NEXT0]] = OpLabel
 ; CHECK-NOT: OpSelectionMerge
 ; CHECK: OpSelectionMerge %[[BREAK_NEXT0_EXIT:[0-9]+]] None
-; CHECK-NEXT: OpBranchConditional %{{[0-9]+}} %[[BREAK_NEXT0_EXIT]] %[[BREAK_NEXT1:[0-9]+]]
+; CHECK-NEXT: OpBranchConditional %{{[0-9]+}} %[[BREAK_BB1:[0-9]+]] %[[BREAK_NEXT1:[0-9]+]]
 ; CHECK: %[[BREAK_NEXT1]] = OpLabel
 ; CHECK-NOT: OpSelectionMerge
 ; CHECK: OpSelectionMerge %[[BREAK_NEXT1_EXIT:[0-9]+]] None
-; CHECK-NEXT: OpBranchConditional %{{[0-9]+}} %[[BREAK_NEXT1_EXIT]] %[[BREAK_CLEANUP:[0-9]+]]
+; CHECK-NEXT: OpBranchConditional %{{[0-9]+}} %[[BREAK_DEFAULT:[0-9]+]] %[[BREAK_CLEANUP:[0-9]+]]
 ; CHECK: %[[BREAK_CLEANUP]] = OpLabel
-; CHECK: OpBranch %[[BREAK_NEXT1_EXIT]]
-; CHECK: %[[BREAK_NEXT1_EXIT]] = OpLabel
-; CHECK: OpBranchConditional %{{[0-9]+}} %[[BREAK_DEFAULT:[0-9]+]] %[[BREAK_NEXT0_EXIT]]
+; CHECK-NEXT: OpBranch %[[BREAK_NEXT1_EXIT]]
 ; CHECK: %[[BREAK_DEFAULT]] = OpLabel
+; CHECK-NEXT: OpBranch %[[BREAK_NEXT1_EXIT]]
+; CHECK: %[[BREAK_NEXT1_EXIT]] = OpLabel
 ; CHECK: OpBranch %[[BREAK_NEXT0_EXIT]]
-; CHECK: %[[BREAK_NEXT0_EXIT]] = OpLabel
-; CHECK: OpBranchConditional %{{[0-9]+}} %[[BREAK_BB1:[0-9]+]] %[[BREAK_EPILOG]]
 ; CHECK: %[[BREAK_BB1]] = OpLabel
+; CHECK-NEXT: OpBranch %[[BREAK_NEXT0_EXIT]]
+; CHECK: %[[BREAK_NEXT0_EXIT]] = OpLabel
 ; CHECK: OpBranch %[[BREAK_EPILOG]]
 ; CHECK: %[[BREAK_BB0]] = OpLabel
-; CHECK: OpBranch %[[BREAK_EPILOG]]
+; CHECK-NEXT: OpBranch %[[BREAK_EPILOG]]
 ; CHECK: %[[BREAK_EPILOG]] = OpLabel
 ; CHECK-NOT: OpSelectionMerge
 ; CHECK: OpFunctionEnd
