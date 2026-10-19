@@ -1692,6 +1692,39 @@ SPIRVGlobalRegistry::getOrCreatePaddingType(MachineIRBuilder &MIRBuilder) {
   return R;
 }
 
+// In a module whose integers are signed (spirv.signed-integers), an LLVM
+// integer type has only its signed SPIR-V type. The unsigned twin has no LLVM
+// type of its own, so it is keyed by width and vector length.
+SPIRVTypeInst
+SPIRVGlobalRegistry::getOrCreateUnsignedTwin(SPIRVTypeInst Ty,
+                                             MachineIRBuilder &MIRBuilder) {
+  unsigned NumElems = 0;
+  SPIRVTypeInst Scalar = Ty;
+  if (Ty->getOpcode() == SPIRV::OpTypeVector) {
+    NumElems = Ty->getOperand(2).getImm();
+    Scalar = getSPIRVTypeForVReg(Ty->getOperand(1).getReg());
+  }
+  if (!Scalar || Scalar->getOpcode() != SPIRV::OpTypeInt ||
+      Scalar->getOperand(2).getImm() == 0)
+    return Ty;
+  const unsigned Width = Scalar->getOperand(1).getImm();
+  auto Key = SPIRV::irhandle_unsigned_int(Width, NumElems);
+  if (const MachineInstr *MI = findMI(Key, &MIRBuilder.getMF()))
+    return MI;
+  // Registered by its register only, with the LLVM type it stands for, so
+  // that sizes and component types resolve; LLVM types still map to the
+  // signed type.
+  LLVMContext &Ctx = MIRBuilder.getMF().getFunction().getContext();
+  Type *LLVMTy = IntegerType::get(Ctx, Width);
+  SPIRVTypeInst R = finishCreatingSPIRVType(
+      LLVMTy, getOpTypeInt(Width, MIRBuilder, /*IsSigned=*/false));
+  if (NumElems)
+    R = finishCreatingSPIRVType(FixedVectorType::get(LLVMTy, NumElems),
+                                getOpTypeVector(NumElems, R, MIRBuilder));
+  add(Key, R);
+  return R;
+}
+
 SPIRVTypeInst SPIRVGlobalRegistry::getOrCreateVulkanPushConstantType(
     MachineIRBuilder &MIRBuilder, Type *T) {
   const auto SC = SPIRV::StorageClass::PushConstant;

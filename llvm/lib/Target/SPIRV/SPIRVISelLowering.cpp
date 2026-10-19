@@ -432,6 +432,43 @@ void validateAccessChain(const SPIRVSubtarget &STI, MachineRegisterInfo *MRI,
   }
 }
 
+// In a module whose integers are signed (spirv.signed-integers), OpUDiv,
+// OpUMod and OpConvertFToU still need an unsigned result type: they compute in
+// the type's unsigned twin, between bitcasts.
+static void computeInUnsignedTwin(const SPIRVSubtarget &STI,
+                                  MachineRegisterInfo *MRI,
+                                  SPIRVGlobalRegistry &GR, MachineInstr &MI,
+                                  bool CastOperands) {
+  Register TypeReg = MI.getOperand(1).getReg();
+  SPIRVTypeInst ResTy = GR.getSPIRVTypeForVReg(TypeReg);
+  MachineIRBuilder MIB(MI);
+  SPIRVTypeInst UTy = GR.getOrCreateUnsignedTwin(ResTy, MIB);
+  if (UTy == ResTy)
+    return;
+  MachineFunction &MF = *MI.getMF();
+  auto Cast = [&](MachineIRBuilder &B, Register Dst, Register TyReg,
+                  Register Src) {
+    B.buildInstr(SPIRV::OpBitcast)
+        .addDef(Dst)
+        .addUse(TyReg)
+        .addUse(Src)
+        .constrainAllUses(*STI.getInstrInfo(), *STI.getRegisterInfo(),
+                          *STI.getRegBankInfo());
+  };
+  if (CastOperands)
+    for (unsigned I = 2, E = MI.getNumOperands(); I != E; ++I) {
+      Register U = createVirtualRegister(UTy, &GR, MRI, MF);
+      Cast(MIB, U, GR.getSPIRVTypeID(UTy), MI.getOperand(I).getReg());
+      MI.getOperand(I).setReg(U);
+    }
+  Register Result = MI.getOperand(0).getReg();
+  Register UResult = createVirtualRegister(UTy, &GR, MRI, MF);
+  MI.getOperand(0).setReg(UResult);
+  MI.getOperand(1).setReg(GR.getSPIRVTypeID(UTy));
+  MachineIRBuilder After(*MI.getParent(), std::next(MI.getIterator()));
+  Cast(After, Result, TypeReg, UResult);
+}
+
 static void validateVec1Ops(const SPIRVSubtarget &STI, MachineRegisterInfo *MRI,
                             SPIRVGlobalRegistry &GR, MachineInstr &MI) {
   // IRTranslator does not believe that rank-1 vectors exist, unlike upstream
@@ -606,6 +643,15 @@ void SPIRVTargetLowering::finalizeLowering(MachineFunction &MF) const {
         if (GR.isScalarOrVectorOfType(MI.getOperand(1).getReg(),
                                       SPIRV::OpTypeBool))
           MI.setDesc(STI.getInstrInfo()->get(SPIRV::OpLogicalNotEqual));
+        break;
+      case SPIRV::OpUDivS:
+      case SPIRV::OpUDivV:
+      case SPIRV::OpUModS:
+      case SPIRV::OpUModV:
+        computeInUnsignedTwin(STI, MRI, GR, MI, /*CastOperands=*/true);
+        break;
+      case SPIRV::OpConvertFToU:
+        computeInUnsignedTwin(STI, MRI, GR, MI, /*CastOperands=*/false);
         break;
       // multiplication of bool operands is equivalent to a logical AND
       case SPIRV::OpIMulS:

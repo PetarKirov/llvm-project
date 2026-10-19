@@ -699,6 +699,11 @@ public:
 
   SPIRVTypeInst getOrCreatePaddingType(MachineIRBuilder &MIRBuilder);
 
+  // The unsigned twin of a signed integer or integer vector type, or the type
+  // itself if it is not signed.
+  SPIRVTypeInst getOrCreateUnsignedTwin(SPIRVTypeInst Ty,
+                                        MachineIRBuilder &MIRBuilder);
+
   SPIRVTypeInst getOrCreateVulkanPushConstantType(MachineIRBuilder &MIRBuilder,
                                                   Type *ElemType);
 
