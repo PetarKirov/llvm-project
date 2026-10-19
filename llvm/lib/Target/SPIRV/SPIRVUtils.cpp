@@ -1197,7 +1197,7 @@ unsigned getArrayComponentCount(const MachineRegisterInfo *MRI,
 }
 
 bool matchPeeledArrayPattern(const StructType *Ty, Type *&OriginalElementType,
-                             uint64_t &TotalSize) {
+                             uint64_t &TotalSize, Type **PaddedElementType) {
   // An array of N padded structs is represented as {[N-1 x <{T, pad}>], T}.
   if (Ty->getStructNumElements() != 2)
     return false;
@@ -1224,44 +1224,10 @@ bool matchPeeledArrayPattern(const StructType *Ty, Type *&OriginalElementType,
 
   const uint64_t ArraySize = FirstElement->getArrayNumElements();
   TotalSize = ArraySize + 1;
-  OriginalElementType = ArrayElementType;
+  OriginalElementType = T_in_struct;
+  if (PaddedElementType)
+    *PaddedElementType = ArrayElementType;
   return true;
-}
-
-Type *reconstitutePeeledArrayType(Type *Ty) {
-  if (!Ty->isStructTy())
-    return Ty;
-
-  auto *STy = cast<StructType>(Ty);
-  Type *OriginalElementType = nullptr;
-  uint64_t TotalSize = 0;
-  if (matchPeeledArrayPattern(STy, OriginalElementType, TotalSize)) {
-    Type *ResultTy = ArrayType::get(
-        reconstitutePeeledArrayType(OriginalElementType), TotalSize);
-    return ResultTy;
-  }
-
-  SmallVector<Type *, 4> NewElementTypes;
-  bool Changed = false;
-  for (Type *ElementTy : STy->elements()) {
-    Type *NewElementTy = reconstitutePeeledArrayType(ElementTy);
-    if (NewElementTy != ElementTy)
-      Changed = true;
-    NewElementTypes.push_back(NewElementTy);
-  }
-
-  if (!Changed)
-    return Ty;
-
-  Type *ResultTy;
-  if (STy->isLiteral()) {
-    ResultTy =
-        StructType::get(STy->getContext(), NewElementTypes, STy->isPacked());
-  } else {
-    ResultTy = StructType::create(STy->getContext(), NewElementTypes,
-                                  STy->getName(), STy->isPacked());
-  }
-  return ResultTy;
 }
 
 std::optional<SPIRV::LinkageType::LinkageType>

@@ -1,14 +1,14 @@
 ; RUN: llc -O0 -mtriple=spirv-unknown-vulkan-compute %s -o - | FileCheck %s
+; RUN: llc -O0 -mtriple=spirv-unknown-vulkan-compute %s -o - | FileCheck %s --check-prefix=NO-PAD
 ; RUN: %if spirv-tools %{ llc -O0 -mtriple=spirv-unknown-vulkan-compute %s -o - -filetype=obj | spirv-val %}
 
 
 ; CHECK-DAG: %[[FLOAT:[0-9]+]] = OpTypeFloat 32
 ; CHECK-DAG: %[[VEC3:[0-9]+]] = OpTypeVector %[[FLOAT]] 3
-; CHECK-DAG: %[[I8:[0-9]+]] = OpTypeInt 8 0
-; CHECK-DAG: %[[STRUCT_PAD:[0-9]+]] = OpTypeStruct %[[VEC3]] %[[I8]]
+; NO-PAD-NOT: OpTypeInt 8
 ; CHECK-DAG: %[[UINT:[0-9]+]] = OpTypeInt 32 0
 ; CHECK-DAG: %[[CONST_3:[0-9]+]] = OpConstant %[[UINT]] 3
-; CHECK-DAG: %[[ARRAY:[0-9]+]] = OpTypeArray %[[STRUCT_PAD]] %[[CONST_3]]
+; CHECK-DAG: %[[ARRAY:[0-9]+]] = OpTypeArray %[[VEC3]] %[[CONST_3]]
 ; CHECK-DAG: %[[CBLAYOUT:[0-9]+]] = OpTypeStruct %[[ARRAY]]
 ; CHECK-DAG: OpMemberDecorate %[[CBLAYOUT]] 0 Offset 0
 ; CHECK-DAG: %[[WRAPPER:[0-9]+]] = OpTypeStruct %[[CBLAYOUT]]
@@ -18,8 +18,6 @@
 
 
 ; CHECK-DAG: OpDecorate %[[ARRAY]] ArrayStride 16
-; CHECK-DAG: OpMemberDecorate %[[STRUCT_PAD]] 0 Offset 0
-; CHECK-DAG: OpMemberDecorate %[[STRUCT_PAD]] 1 Offset 12
 ; CHECK-DAG: OpMemberDecorate %[[WRAPPER]] 0 Offset 0
 ; CHECK-DAG: OpDecorate %[[WRAPPER]] Block
 %__cblayout_MyCBuffer = type <{ <{ [2 x <{ <3 x float>, target("spirv.Padding", 4) }>], <3 x float> }> }>
@@ -50,8 +48,7 @@ entry:
 ; CHECK: %[[PTR_ELEM:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[ACCESS_ARRAY]] %[[IDX_CONV]]
   %cbufferidx.i = getelementptr <{ <3 x float>, target("spirv.Padding", 4) }>, ptr addrspace(12) @myArray, i64 %idxprom.i
 
-; CHECK: %[[PTR_FIELD:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[PTR_ELEM]] {{.*}}
-; CHECK: %[[VAL_VEC3:[0-9]+]] = OpLoad %[[VEC3]] %[[PTR_FIELD]]
+; CHECK: %[[VAL_VEC3:[0-9]+]] = OpLoad %[[VEC3]] %[[PTR_ELEM]]
   %2 = load <3 x float>, ptr addrspace(12) %cbufferidx.i, align 16
 
   %3 = tail call noundef align 16 dereferenceable(16) ptr addrspace(11) @llvm.spv.resource.getpointer.p11.tspirv.VulkanBuffer_a0v3f32_12_1t(target("spirv.VulkanBuffer", [0 x <3 x float>], 12, 1) %0, i32 %1)

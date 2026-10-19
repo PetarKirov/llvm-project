@@ -345,20 +345,16 @@ Value *
 createExitVariable(BasicBlock *BB,
                    const DenseMap<BasicBlock *, ConstantInt *> &TargetToValue);
 
-// Check for peeled array structs and recursively reconstitute them. In HLSL
+// Check for peeled array structs, which lower to arrays of T. In HLSL
 // CBuffers, arrays may have padding between the elements, but not after the
 // last element. To represent this in LLVM IR an array [N x T] will be
 // represented as {[N-1 x {T, spirv.Padding}], T}. The function
-// matchPeeledArrayPattern recognizes this pattern retrieving the type {T,
-// spirv.Padding}, and the size N.
+// matchPeeledArrayPattern recognizes this pattern retrieving the type T, the
+// size N and, on request, the padded type {T, spirv.Padding}, whose size is
+// the array's stride.
 bool matchPeeledArrayPattern(const StructType *Ty, Type *&OriginalElementType,
-                             uint64_t &TotalSize);
-
-// This function will turn the type {[N-1 x {T, spirv.Padding}], T} back into
-// [N x {T, spirv.Padding}]. So it can be translated into SPIR-V. The offset
-// decorations will be such that there will be no padding after the array when
-// relevant.
-Type *reconstitutePeeledArrayType(Type *Ty);
+                             uint64_t &TotalSize,
+                             Type **PaddedElementType = nullptr);
 
 inline bool hasInitializer(const GlobalVariable *GV) {
   if (!GV->hasInitializer())
