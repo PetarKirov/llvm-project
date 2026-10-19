@@ -24,6 +24,8 @@
 #include "SPIRVUtils.h"
 #include "TargetInfo/SPIRVTargetInfo.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/AsmPrinterAnalysis.h"
@@ -34,6 +36,7 @@
 #include "llvm/CodeGen/MachinePassManager.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/IR/Analysis.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAssembler.h"
@@ -414,8 +417,14 @@ void SPIRVAsmPrinter::outputOpMemoryModel() {
 // These declare the set of global variables from a module that form
 // the interface of this entry point.
 void SPIRVAsmPrinter::outputEntryPoints() {
-  // Find all OpVariable IDs with required StorageClass.
+  // Find all OpVariable IDs with required StorageClass. A global's OpVariable
+  // is materialised in every function that uses it, so each is also recorded
+  // with its function: a shader entry point's interface is the variables of
+  // the functions its call tree reaches, not every variable of the module (a
+  // vertex stage's integer input would otherwise sit in a fragment entry's
+  // interface, which Vulkan requires to be Flat).
   DenseSet<MCRegister> InterfaceIDs;
+  DenseMap<const Function *, SmallVector<MCRegister, 8>> UsedBy;
   for (const MachineInstr *MI : MAI->GlobalVarList) {
     assert(MI->getOpcode() == SPIRV::OpVariable ||
            MI->getOpcode() == SPIRV::OpUntypedVariableKHR);
@@ -430,17 +439,37 @@ void SPIRVAsmPrinter::outputEntryPoints() {
       const MachineFunction *MF = MI->getMF();
       MCRegister Reg = MAI->getRegisterAlias(MF, MI->getOperand(0).getReg());
       InterfaceIDs.insert(Reg);
+      UsedBy[&MF->getFunction()].push_back(Reg);
     }
   }
 
-  // Output OpEntryPoints adding interface args to all of them.
+  // Output OpEntryPoints, each with the interface its call tree uses.
   for (const MachineInstr *MI : MAI->getMSInstrs(SPIRV::MB_EntryPoints)) {
     SPIRVMCInstLower MCInstLowering;
     MCInst TmpInst;
     MCInstLowering.lower(MI, TmpInst, MAI);
+    SmallPtrSet<const Function *, 8> Reached;
+    SmallVector<const Function *, 8> Worklist = {&MI->getMF()->getFunction()};
+    while (!Worklist.empty()) {
+      const Function *F = Worklist.pop_back_val();
+      if (!Reached.insert(F).second)
+        continue;
+      for (const Instruction &I : instructions(*F))
+        if (const auto *CB = dyn_cast<CallBase>(&I))
+          if (const Function *Callee = CB->getCalledFunction();
+              Callee && !Callee->isDeclaration())
+            Worklist.push_back(Callee);
+    }
+    SetVector<MCRegister> Used;
+    for (const Function *F : Reached)
+      if (auto It = UsedBy.find(F); It != UsedBy.end())
+        Used.insert_range(It->second);
+    // A kernel keeps every variable: OpenCL code can reach a
+    // global through another's initializer, which no function's body shows.
     for (MCRegister Reg : InterfaceIDs) {
       assert(Reg.isValid());
-      TmpInst.addOperand(MCOperand::createReg(Reg));
+      if (!ST->isShader() || Used.contains(Reg))
+        TmpInst.addOperand(MCOperand::createReg(Reg));
     }
     outputMCInst(TmpInst);
   }
