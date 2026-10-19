@@ -54,10 +54,9 @@ entry:
   %1 = tail call i32 @llvm.spv.thread.id.i32(i32 0)
   %rem.i = and i32 %1, 3
 
-; CHECK: %[[IDX_CONV:[0-9]+]] = OpUConvert {{.*}}
   %idxprom.i = zext nneg i32 %rem.i to i64
 
-; CHECK: %[[PTR_ELEM:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[ACCESS_ARRAY]] %[[IDX_CONV]]
+; CHECK: %[[PTR_ELEM:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[ACCESS_ARRAY]] {{%[0-9]+}}
   %cbufferidx.i = getelementptr <{ %OrigType, target("spirv.Padding", 12) }>, ptr addrspace(12) @myArray, i64 %idxprom.i
 
 ; CHECK: %[[PTR_FIELD:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[PTR_ELEM]] %[[ZERO]]

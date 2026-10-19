@@ -195,6 +195,24 @@ static Type *getUnpaddedElementType(Type *Ty) {
   return ST->getElementType(0);
 }
 
+// A logical access chain indexes fewer than 2^31 elements, so an index that a
+// frontend widened from 32 bits (D's size_t, a C long) is used from before
+// the widening. Its wide type would otherwise bring a 64-bit integer, and the
+// Int64 capability, into a module that computes nothing in 64 bits. A buffer
+// device address is not logical: its pointer may step further, so it keeps
+// the index it was given.
+static Value *narrowLogicalIndex(Value *Idx) {
+  if (auto *C = dyn_cast<ConstantInt>(Idx))
+    return C->getBitWidth() > 32 && C->getValue().isSignedIntN(32)
+               ? ConstantInt::get(Type::getInt32Ty(C->getContext()),
+                                  C->getSExtValue())
+               : Idx;
+  if (!isa<SExtInst>(Idx) && !isa<ZExtInst>(Idx))
+    return Idx;
+  Value *Src = cast<CastInst>(Idx)->getOperand(0);
+  return Src->getType()->isIntegerTy(32) ? Src : Idx;
+}
+
 // The padded element <{T, spirv.Padding}> of a peeled array type, or null.
 static Type *getPeeledArrayPaddedElement(Type *Ty) {
   auto *ST = dyn_cast<StructType>(Ty);
@@ -406,6 +424,10 @@ class SPIRVEmitIntrinsicsImpl
   Type *getGEPTypeLogical(GetElementPtrInst *GEP);
 
   Instruction *buildLogicalAccessChainFromGEP(GetElementPtrInst &GEP);
+  bool isPhysicalPointerGEP(const GetElementPtrInst &GEP) const {
+    return TM.getSubtargetImpl()->usesPhysicalStorageBuffer() &&
+           GEP.getPointerAddressSpace() == 1;
+  }
   // A byte-addressing GEP on a buffer device address, rewritten over the
   // pointee type; null if its offset is not one the rewrite can express.
   Instruction *buildPhysicalPointerGEP(GetElementPtrInst &GEP);
@@ -968,8 +990,10 @@ Instruction *SPIRVEmitIntrinsicsImpl::buildLogicalAccessChainFromGEP(
         Indices.push_back(
             ConstantInt::get(B.getInt32Ty(), Index, /* Signed= */ false));
       },
-      [&Indices, &B, &DL, this](Type *EltType, Value *Offset,
-                                uint64_t Multiplier) {
+      [&Indices, &B, &DL, &GEP, this](Type *EltType, Value *Offset,
+                                      uint64_t Multiplier) {
+        if (!isPhysicalPointerGEP(GEP))
+          Offset = narrowLogicalIndex(Offset);
         Value *Index = nullptr;
         uint32_t EltTypeSize = DL.getTypeSizeInBits(EltType) / 8;
         assert(Multiplier != 0);
@@ -2292,12 +2316,16 @@ SPIRVEmitIntrinsicsImpl::visitGetElementPtrInst(GetElementPtrInst &I) {
   // selects T inside it is dropped.
   Type *SrcElemTy = I.getSourceElementType();
   SmallVector<Value *> GEPIndices(I.indices());
-  if (TM.getSubtargetImpl()->isLogicalSPIRV())
+  if (TM.getSubtargetImpl()->isLogicalSPIRV()) {
     if (Type *T = getUnpaddedElementType(SrcElemTy)) {
       SrcElemTy = T;
       if (GEPIndices.size() > 1)
         GEPIndices.erase(GEPIndices.begin() + 1);
     }
+    if (!isPhysicalPointerGEP(I))
+      for (Value *&Idx : GEPIndices)
+        Idx = narrowLogicalIndex(Idx);
+  }
 
   if (TM.getSubtargetImpl()->isLogicalSPIRV() && !isFirstIndexZero(&I)) {
     // Logical SPIR-V cannot use the OpPtrAccessChain instruction. If the first
