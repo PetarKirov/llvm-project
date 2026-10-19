@@ -1196,6 +1196,23 @@ unsigned getArrayComponentCount(const MachineRegisterInfo *MRI,
   return foldImm(ResType->getOperand(2), MRI);
 }
 
+bool isSpirvPaddingType(const Type *Ty) {
+  const auto *TET = dyn_cast<TargetExtType>(Ty);
+  return TET && TET->getName() == "spirv.Padding";
+}
+
+bool hasPaddingMembers(const StructType *Ty) {
+  return any_of(Ty->elements(), isSpirvPaddingType);
+}
+
+unsigned memberIndexWithoutPadding(const StructType *Ty, unsigned Index) {
+  unsigned R = 0;
+  for (unsigned I = 0; I < Index; ++I)
+    if (!isSpirvPaddingType(Ty->getElementType(I)))
+      ++R;
+  return R;
+}
+
 bool matchPeeledArrayPattern(const StructType *Ty, Type *&OriginalElementType,
                              uint64_t &TotalSize, Type **PaddedElementType) {
   // An array of N padded structs is represented as {[N-1 x <{T, pad}>], T}.

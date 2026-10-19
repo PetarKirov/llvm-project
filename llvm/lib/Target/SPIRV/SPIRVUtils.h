@@ -347,6 +347,15 @@ createExitVariable(BasicBlock *BB,
 // matchPeeledArrayPattern recognizes this pattern retrieving the type T, the
 // size N and, on request, the padded type {T, spirv.Padding}, whose size is
 // the array's stride.
+// A struct laid out explicitly (a block's) may carry spirv.Padding members, the
+// distance to its next member, as a frontend writes std140 into a packed
+// struct. They are not members of its SPIR-V type: the other members keep
+// their offsets and are numbered among themselves.
+bool isSpirvPaddingType(const Type *Ty);
+bool hasPaddingMembers(const StructType *Ty);
+// The index of LLVM member `Index` of `Ty` among its non-padding members.
+unsigned memberIndexWithoutPadding(const StructType *Ty, unsigned Index);
+
 bool matchPeeledArrayPattern(const StructType *Ty, Type *&OriginalElementType,
                              uint64_t &TotalSize,
                              Type **PaddedElementType = nullptr);

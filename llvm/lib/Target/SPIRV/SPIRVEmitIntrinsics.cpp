@@ -1031,7 +1031,9 @@ bool SPIRVEmitIntrinsicsImpl::walkLogicalAccessChainConstant(
       unsigned Element = STL->getElementContainingOffset(Offset);
       Offset -= STL->getElementOffset(Element);
       CurType = ST->getElementType(Element);
-      OnLiteralIndexing(CurType, Element);
+      OnLiteralIndexing(CurType, hasPaddingMembers(ST)
+                                     ? memberIndexWithoutPadding(ST, Element)
+                                     : Element);
     } else if (auto *VT = dyn_cast<FixedVectorType>(CurType)) {
       Type *EltTy = VT->getElementType();
       TypeSize EltSizeBits = DL.getTypeSizeInBits(EltTy);
@@ -2430,6 +2432,26 @@ SPIRVEmitIntrinsicsImpl::visitGetElementPtrInst(GetElementPtrInst &I) {
     if (!isPhysicalPointerGEP(I))
       for (Value *&Idx : GEPIndices)
         Idx = narrowLogicalIndex(Idx);
+    // A struct member index counts the members a padded struct keeps.
+    Type *Cur = SrcElemTy;
+    for (size_t K = 1; K < GEPIndices.size() && Cur; ++K) {
+      if (auto *ST = dyn_cast<StructType>(Cur)) {
+        auto *CI = dyn_cast<ConstantInt>(GEPIndices[K]);
+        if (!CI)
+          break;
+        const unsigned Index = CI->getZExtValue();
+        Cur = ST->getElementType(Index);
+        if (hasPaddingMembers(ST))
+          GEPIndices[K] = ConstantInt::get(
+              CI->getType(), memberIndexWithoutPadding(ST, Index));
+      } else if (auto *AT = dyn_cast<ArrayType>(Cur)) {
+        Cur = AT->getElementType();
+      } else if (auto *VT = dyn_cast<VectorType>(Cur)) {
+        Cur = VT->getElementType();
+      } else {
+        break;
+      }
+    }
   }
 
   if (TM.getSubtargetImpl()->isLogicalSPIRV() && !isFirstIndexZero(&I)) {
