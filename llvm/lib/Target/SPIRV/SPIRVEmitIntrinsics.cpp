@@ -1236,6 +1236,11 @@ Type *SPIRVEmitIntrinsicsImpl::deduceElementTypeHelper(
       } else if (HandleType->getTargetExtName() == "spirv.VulkanBuffer") {
         // This call is supposed to index into an array
         Ty = HandleType->getTypeParameter(0);
+        // A block with explicit offsets wraps its struct in spirv.Layout; its
+        // members are the struct's.
+        if (auto *LayoutTy = dyn_cast<TargetExtType>(Ty);
+            LayoutTy && LayoutTy->getName() == "spirv.Layout")
+          Ty = LayoutTy->getTypeParameter(0);
         if (II->getIntrinsicID() == Intrinsic::spv_resource_getpointer) {
           if (Ty->isArrayTy())
             Ty = Ty->getArrayElementType();
