@@ -4288,8 +4288,10 @@ lowerBuiltinType(const Type *OpaqueType,
   }
 
   // Emit OpName instruction if a new OpType<...> instruction was added
-  // (equivalent type was not found in GlobalRegistry).
-  if (NumStartingVRegs < MIRBuilder.getMRI()->getNumVirtRegs())
+  // (equivalent type was not found in GlobalRegistry). A spirv.Layout is its
+  // struct, already named after it.
+  if (NumStartingVRegs < MIRBuilder.getMRI()->getNumVirtRegs() &&
+      Name != "spirv.Layout")
     buildOpName(GR->getSPIRVTypeID(TargetType), Name, MIRBuilder);
 
   return TargetType;
