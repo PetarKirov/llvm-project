@@ -274,6 +274,48 @@ static void lowerWholeObjectMemSets(Function &F) {
   }
 }
 
+// An optimiser splits t[i + k] into an element's address and a constant byte
+// offset past it, gep i8 (gep [S x i8] t, i), C with C >= S. A logical access
+// chain starts inside the element and cannot step to another, so the whole
+// elements the offset steps over join the element's index, gep [S x i8] t,
+// (i + C / S), and only the rest, C % S, indexes inside it. A buffer device
+// address may step, and keeps its GEPs.
+static void foldElementSteps(Function &F, bool UsesPhysicalStorageBuffer) {
+  SmallVector<GetElementPtrInst *> GEPs;
+  for (Instruction &I : instructions(F))
+    if (auto *G = dyn_cast<GetElementPtrInst>(&I))
+      GEPs.push_back(G);
+  for (GetElementPtrInst *G : GEPs) {
+    if (UsesPhysicalStorageBuffer && G->getPointerAddressSpace() == 1)
+      continue;
+    std::optional<uint64_t> Unit =
+        getByteAddressingMultiplier(G->getSourceElementType());
+    auto *Offset = dyn_cast<ConstantInt>(G->getOperand(1));
+    auto *Elem = dyn_cast<GetElementPtrInst>(G->getPointerOperand());
+    if (!Unit || G->getNumIndices() != 1 || !Offset || Offset->isNegative() ||
+        !Elem || Elem->getNumIndices() != 1 ||
+        isa<ConstantInt>(Elem->getOperand(1)))
+      continue;
+    std::optional<uint64_t> Stride =
+        getByteAddressingMultiplier(Elem->getSourceElementType());
+    const uint64_t Bytes = Offset->getZExtValue() * *Unit;
+    if (!Stride || Bytes < *Stride)
+      continue;
+    IRBuilder<> B(G);
+    Value *Index = narrowLogicalIndex(Elem->getOperand(1));
+    Value *Stepped =
+        B.CreateAdd(Index, ConstantInt::get(Index->getType(), Bytes / *Stride));
+    Value *New = B.CreateGEP(Elem->getSourceElementType(),
+                             Elem->getPointerOperand(), Stepped);
+    if (Bytes % *Stride)
+      New = B.CreateGEP(B.getInt8Ty(), New, B.getInt32(Bytes % *Stride));
+    G->replaceAllUsesWith(New);
+    G->eraseFromParent();
+    if (Elem->use_empty())
+      Elem->eraseFromParent();
+  }
+}
+
 // The padded element <{T, spirv.Padding}> of a peeled array type, or null.
 static Type *getPeeledArrayPaddedElement(Type *Ty) {
   auto *ST = dyn_cast<StructType>(Ty);
@@ -4148,8 +4190,10 @@ bool SPIRVEmitIntrinsicsImpl::runOnFunction(Function &Func) {
 
   processParamTypesByFunHeader(CurrF, B);
 
-  if (ST.isLogicalSPIRV())
+  if (ST.isLogicalSPIRV()) {
+    foldElementSteps(Func, ST.usesPhysicalStorageBuffer());
     lowerWholeObjectMemSets(Func);
+  }
 
   // Fix GEP result types ahead of inference, and simplify if possible.
   // Data structure for dead instructions that were simplified and replaced.
