@@ -936,9 +936,18 @@ Register SPIRVGlobalRegistry::buildGlobalVariable(
       assignSPIRVTypeToVReg(BaseType, Reg, MIRBuilder.getMF());
   }
 
-  // If it's a global variable with name, output OpName for it.
-  if (GVar && GVar->hasName())
-    buildOpName(Reg, GVar->getName(), MIRBuilder);
+  // If it's a global variable with name, output OpName for it. A frontend
+  // whose source gives one name to several variables (a vertex output and the
+  // fragment input it feeds) states that name in `spirv.Name` metadata, as
+  // LLVM's global names must be unique.
+  if (GVar && GVar->hasName()) {
+    StringRef Name = GVar->getName();
+    if (const MDNode *MD = GVar->getMetadata("spirv.Name");
+        MD && MD->getNumOperands() == 1)
+      if (const auto *S = dyn_cast<MDString>(MD->getOperand(0)))
+        Name = S->getString();
+    buildOpName(Reg, Name, MIRBuilder);
+  }
 
   // Output decorations for the GV.
   // TODO: maybe move to GenerateDecorations pass.
