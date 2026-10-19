@@ -67,6 +67,9 @@ class SPIRVGlobalRegistry : public SPIRVIRMapping {
   // Explicitly laid-out structs whose spirv.Padding members are dropped, with
   // their LLVM type, to number a member among the others.
   DenseMap<SPIRVTypeInst, const StructType *> PaddedStructs;
+  // Uniform blocks that are their struct, with no wrapper
+  // (`spirv.struct-blocks`).
+  DenseSet<SPIRVTypeInst> StructBlockTypes;
 
   // Stores for each function the last inserted SPIR-V Type.
   // See: SPIRVGlobalRegistry::createOpType.
@@ -706,6 +709,11 @@ public:
   // members were dropped; else none, and the index stands.
   std::optional<unsigned> memberIndexOf(SPIRVTypeInst StructTy,
                                         unsigned Index) const;
+
+  // Whether `BlockTy` is a uniform block that is its struct, with no wrapper.
+  bool isStructBlock(SPIRVTypeInst BlockTy) const {
+    return StructBlockTypes.contains(BlockTy);
+  }
 
   // The unsigned twin of a signed integer or integer vector type, or the type
   // itself if it is not signed.

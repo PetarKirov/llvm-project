@@ -6786,22 +6786,27 @@ bool SPIRVInstructionSelector::selectResourceGetPointer(Register &ResVReg,
   assert(ResType->getOpcode() == SPIRV::OpTypePointer);
   MachineIRBuilder MIRBuilder(I);
 
-  Register ZeroReg =
-      buildZerosVal(GR.getOrCreateSPIRVIntegerType(32, I, TII), I);
+  // A block that is its struct has no wrapper to step into: its members are
+  // one index away, and its base is the block itself.
+  SPIRVTypeInst Wrapper = GR.getPointeeType(RegType);
+  const bool StructBlock = Wrapper && GR.isStructBlock(Wrapper);
+  if (StructBlock && I.getNumExplicitOperands() <= 3)
+    return BuildCOPY(ResVReg, ResourcePtr, I);
   auto MIB =
       BuildMI(*I.getParent(), I, I.getDebugLoc(), TII.get(SPIRV::OpAccessChain))
           .addDef(ResVReg)
           .addUse(GR.getSPIRVTypeID(ResType))
-          .addUse(ResourcePtr)
-          .addUse(ZeroReg);
+          .addUse(ResourcePtr);
+  if (!StructBlock)
+    MIB.addUse(buildZerosVal(GR.getOrCreateSPIRVIntegerType(32, I, TII), I));
 
   if (I.getNumExplicitOperands() > 3) {
     Register IndexReg = I.getOperand(3).getReg();
     // A member of a block whose padding members were dropped is numbered
     // among the others.
-    SPIRVTypeInst Wrapper = GR.getPointeeType(RegType);
     SPIRVTypeInst Block =
-        Wrapper && Wrapper->getOpcode() == SPIRV::OpTypeStruct
+        StructBlock ? Wrapper
+        : Wrapper && Wrapper->getOpcode() == SPIRV::OpTypeStruct
             ? GR.getSPIRVTypeForVReg(Wrapper->getOperand(1).getReg())
             : SPIRVTypeInst();
     if (Block) {

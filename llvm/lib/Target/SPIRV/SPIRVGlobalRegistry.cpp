@@ -1685,9 +1685,20 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOrCreateVulkanBufferType(
     return MI;
 
   bool ExplicitLayoutRequired = storageClassRequiresExplictLayout(SC);
+  // A module that asks for it (`spirv.struct-blocks`) makes a uniform
+  // buffer of one struct that struct, as DXC emits a cbuffer: no struct
+  // wraps it, so the block keeps the struct's name and members.
+  const auto *Flag = mdconst::extract_or_null<ConstantInt>(
+      MIRBuilder.getMF().getFunction().getParent()->getModuleFlag(
+          "spirv.struct-blocks"));
+  const auto *ElemExt = dyn_cast<TargetExtType>(ElemType);
+  const bool StructBlock = Flag && !Flag->isZero() &&
+                           SC == SPIRV::StorageClass::Uniform &&
+                           (isa<StructType>(ElemType) ||
+                            (ElemExt && ElemExt->getName() == "spirv.Layout"));
   // We need to get the SPIR-V type for the element here, so we can add the
   // decoration to it.
-  auto *T = StructType::create(ElemType);
+  Type *T = StructBlock ? ElemType : StructType::create(ElemType);
   SPIRVTypeInst BlockType =
       getOrCreateSPIRVType(T, MIRBuilder, SPIRV::AccessQualifier::None,
                            ExplicitLayoutRequired, EmitIr);
@@ -1695,8 +1706,12 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOrCreateVulkanBufferType(
   buildOpDecorate(BlockType->defs().begin()->getReg(), MIRBuilder,
                   SPIRV::Decoration::Block, {});
   BlockDecoratedTypes.insert(BlockType);
+  if (StructBlock)
+    StructBlockTypes.insert(BlockType);
 
-  if (!IsWritable) {
+  // A uniform block is read-only by its storage class; a wrapper's one
+  // member is decorated so for the other storage classes.
+  if (!IsWritable && !StructBlock) {
     buildOpMemberDecorate(BlockType->defs().begin()->getReg(), MIRBuilder,
                           SPIRV::Decoration::NonWritable, 0, {});
   }
