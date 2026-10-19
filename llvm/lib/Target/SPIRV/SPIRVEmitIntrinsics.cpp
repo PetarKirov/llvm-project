@@ -22,6 +22,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstIterator.h"
@@ -211,6 +212,66 @@ static Value *narrowLogicalIndex(Value *Idx) {
     return Idx;
   Value *Src = cast<CastInst>(Idx)->getOperand(0);
   return Src->getType()->isIntegerTy(32) ? Src : Idx;
+}
+
+// An optimiser merges the stores that clear an object into one memset. Logical
+// SPIR-V has no byte-wise copy, and a memset lowers to an OpCopyMemory from a
+// byte array, whose type is not the object's. A memset of a whole local or
+// global of known type is instead a store of the constant it leaves.
+// The constant of type Ty whose every byte is Val's: null or all ones,
+// through arrays and structs, or null if there is none.
+static Constant *getUniformByteConstant(Constant *Val, Type *Ty,
+                                        const DataLayout &DL) {
+  if (Constant *C = ConstantFoldLoadFromUniformValue(Val, Ty, DL))
+    return C;
+  if (!Val->isAllOnesValue())
+    return nullptr;
+  if (auto *AT = dyn_cast<ArrayType>(Ty)) {
+    Constant *E = getUniformByteConstant(Val, AT->getElementType(), DL);
+    return E ? ConstantArray::get(
+                   AT, SmallVector<Constant *>(AT->getNumElements(), E))
+             : nullptr;
+  }
+  if (auto *ST = dyn_cast<StructType>(Ty)) {
+    SmallVector<Constant *> Members;
+    for (Type *MT : ST->elements()) {
+      Constant *M = getUniformByteConstant(Val, MT, DL);
+      if (!M)
+        return nullptr;
+      Members.push_back(M);
+    }
+    return ConstantStruct::get(ST, Members);
+  }
+  return nullptr;
+}
+
+static void lowerWholeObjectMemSets(Function &F) {
+  const DataLayout &DL = F.getDataLayout();
+  SmallVector<MemSetInst *> MemSets;
+  for (Instruction &I : instructions(F))
+    if (auto *MS = dyn_cast<MemSetInst>(&I))
+      MemSets.push_back(MS);
+  for (MemSetInst *MS : MemSets) {
+    auto *Val = dyn_cast<Constant>(MS->getValue());
+    auto *Len = dyn_cast<ConstantInt>(MS->getLength());
+    if (!Val || !Len || MS->isVolatile())
+      continue;
+    Value *Dest = MS->getDest()->stripPointerCasts();
+    Type *ObjTy = nullptr;
+    if (auto *AI = dyn_cast<AllocaInst>(Dest); AI && !AI->isArrayAllocation())
+      ObjTy = AI->getAllocatedType();
+    else if (auto *GV = dyn_cast<GlobalVariable>(Dest))
+      ObjTy = GV->getValueType();
+    if (!ObjTy || !ObjTy->isSized() ||
+        DL.getTypeStoreSize(ObjTy) != Len->getZExtValue())
+      continue;
+    Constant *Init = getUniformByteConstant(Val, ObjTy, DL);
+    if (!Init)
+      continue;
+    IRBuilder<> B(MS);
+    B.CreateAlignedStore(Init, Dest, MS->getDestAlign());
+    MS->eraseFromParent();
+  }
 }
 
 // The padded element <{T, spirv.Padding}> of a peeled array type, or null.
@@ -4086,6 +4147,9 @@ bool SPIRVEmitIntrinsicsImpl::runOnFunction(Function &Func) {
   AggrStores.clear();
 
   processParamTypesByFunHeader(CurrF, B);
+
+  if (ST.isLogicalSPIRV())
+    lowerWholeObjectMemSets(Func);
 
   // Fix GEP result types ahead of inference, and simplify if possible.
   // Data structure for dead instructions that were simplified and replaced.
