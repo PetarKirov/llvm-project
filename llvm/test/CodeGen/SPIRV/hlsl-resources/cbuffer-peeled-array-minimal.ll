@@ -1,4 +1,5 @@
 ; RUN: llc -O0 -mtriple=spirv-unknown-vulkan-compute %s -o - | FileCheck %s
+; RUN: llc -O0 -mtriple=spirv-unknown-vulkan-compute %s -o - | FileCheck %s --check-prefix=NO-PAD
 ; RUN: %if spirv-tools %{ llc -O0 -mtriple=spirv-unknown-vulkan-compute %s -o - -filetype=obj | spirv-val %}
 
 ; CHECK-DAG: OpDecorate %[[ARRAY:[0-9]+]] ArrayStride 16
@@ -7,16 +8,13 @@
 ; CHECK-DAG: OpMemberDecorate %[[WRAPPER:[0-9]+]] 0 Offset 0
 ; CHECK-DAG: OpDecorate %[[WRAPPER]] Block
 ; CHECK-DAG: OpMemberDecorate %[[STRUCT:[0-9]+]] 0 Offset 0
-; CHECK-DAG: OpMemberDecorate %[[STRUCT_PAD:[0-9]+]] 0 Offset 0
-; CHECK-DAG: OpMemberDecorate %[[STRUCT_PAD]] 1 Offset 4
 
 ; CHECK-DAG: %[[FLOAT:[0-9]+]] = OpTypeFloat 32
 ; CHECK-DAG: %[[STRUCT]] = OpTypeStruct %[[FLOAT]]
-; CHECK-DAG: %[[I8:[0-9]+]] = OpTypeInt 8 0
-; CHECK-DAG: %[[STRUCT_PAD]] = OpTypeStruct %[[STRUCT]] %[[I8]]
+; NO-PAD-NOT: OpTypeInt 8
 ; CHECK-DAG: %[[UINT:[0-9]+]] = OpTypeInt 32 0
 ; CHECK-DAG: %[[CONST_4:[0-9]+]] = OpConstant %[[UINT]] 4
-; CHECK-DAG: %[[ARRAY]] = OpTypeArray %[[STRUCT_PAD]] %[[CONST_4]]
+; CHECK-DAG: %[[ARRAY]] = OpTypeArray %[[STRUCT]] %[[CONST_4]]
 ; CHECK-DAG: %[[CBLAYOUT]] = OpTypeStruct %[[ARRAY]] %[[FLOAT]]
 ; CHECK-DAG: %[[WRAPPER]] = OpTypeStruct %[[CBLAYOUT]]
 ; CHECK-DAG: %[[PTR_WRAPPER:[0-9]+]] = OpTypePointer Uniform %[[WRAPPER]]
@@ -62,7 +60,7 @@ entry:
 ; CHECK: %[[PTR_ELEM:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[ACCESS_ARRAY]] %[[IDX_CONV]]
   %cbufferidx.i = getelementptr <{ %OrigType, target("spirv.Padding", 12) }>, ptr addrspace(12) @myArray, i64 %idxprom.i
 
-; CHECK: %[[PTR_FIELD:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[PTR_ELEM]] %[[ZERO]] %[[ZERO]]
+; CHECK: %[[PTR_FIELD:[0-9]+]] = OpAccessChain {{%[0-9]+}} %[[PTR_ELEM]] %[[ZERO]]
 ; CHECK: %[[VAL_FLOAT:[0-9]+]] = OpLoad %[[FLOAT]] %[[PTR_FIELD]]
   %2 = load float, ptr addrspace(12) %cbufferidx.i, align 4
 

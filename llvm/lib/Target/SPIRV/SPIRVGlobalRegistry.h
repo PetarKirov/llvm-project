@@ -492,7 +492,8 @@ private:
 
   SPIRVTypeInst getOpTypeArray(uint32_t NumElems, SPIRVTypeInst ElemType,
                                MachineIRBuilder &MIRBuilder,
-                               bool ExplicitLayoutRequired, bool EmitIR);
+                               bool ExplicitLayoutRequired, bool EmitIR,
+                               std::optional<uint32_t> Stride = std::nullopt);
 
   SPIRVTypeInst getOpTypeOpaque(const StructType *Ty,
                                 MachineIRBuilder &MIRBuilder);

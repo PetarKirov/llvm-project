@@ -182,6 +182,29 @@ static std::optional<uint64_t> getByteAddressingMultiplier(Type *Ty) {
   return std::nullopt;
 }
 
+// An element of a peeled cbuffer array, <{T, spirv.Padding}>, stands for its
+// T: the padding is the distance between elements, which the array's stride
+// carries, and never a member that can be addressed.
+static Type *getUnpaddedElementType(Type *Ty) {
+  auto *ST = dyn_cast<StructType>(Ty);
+  if (!ST || ST->getNumElements() != 2)
+    return nullptr;
+  auto *Pad = dyn_cast<TargetExtType>(ST->getElementType(1));
+  if (!Pad || Pad->getName() != "spirv.Padding")
+    return nullptr;
+  return ST->getElementType(0);
+}
+
+// The padded element <{T, spirv.Padding}> of a peeled array type, or null.
+static Type *getPeeledArrayPaddedElement(Type *Ty) {
+  auto *ST = dyn_cast<StructType>(Ty);
+  Type *T = nullptr, *Padded = nullptr;
+  uint64_t TotalSize = 0;
+  if (!ST || !matchPeeledArrayPattern(ST, T, TotalSize, &Padded))
+    return nullptr;
+  return Padded;
+}
+
 class SPIRVEmitIntrinsicsImpl
     : public InstVisitor<SPIRVEmitIntrinsicsImpl, Instruction *> {
   const SPIRVTargetMachine &TM;
@@ -831,6 +854,11 @@ bool SPIRVEmitIntrinsicsImpl::walkLogicalAccessChainDynamic(
   // of the struct if the current type is a struct.
   // Try to find the first array type that is at offset 0 in the struct.
   while (auto *ST = dyn_cast<StructType>(CurType)) {
+    if (Type *Padded = getPeeledArrayPaddedElement(ST)) {
+      // The padded element's size is the stride to divide the offset by.
+      OnDynamicIndexing(Padded, Operand, Multiplier);
+      return false;
+    }
     if (ST->getNumElements() == 0)
       break;
     CurType = ST->getElementType(0);
@@ -858,6 +886,17 @@ bool SPIRVEmitIntrinsicsImpl::walkLogicalAccessChainConstant(
       uint64_t Index = Offset / EltTypeSize;
       Offset = Offset - (Index * EltTypeSize);
       CurType = AT->getElementType();
+      OnLiteralIndexing(CurType, Index);
+    } else if (Type *Padded = getPeeledArrayPaddedElement(CurType)) {
+      // A peeled array is an array of T whose stride is its padded element.
+      Type *T = getUnpaddedElementType(Padded);
+      uint64_t Stride = DL.getTypeAllocSize(Padded);
+      uint64_t Count =
+          cast<StructType>(CurType)->getElementType(0)->getArrayNumElements() +
+          1;
+      uint64_t Index = std::min(Offset / Stride, Count - 1);
+      Offset -= Index * Stride;
+      CurType = T;
       OnLiteralIndexing(CurType, Index);
     } else if (StructType *ST = dyn_cast<StructType>(CurType)) {
       uint32_t StructSize = DL.getTypeSizeInBits(ST) / 8;
@@ -1055,12 +1094,23 @@ Type *SPIRVEmitIntrinsicsImpl::getGEPTypeLogical(GetElementPtrInst *GEP) {
 
   bool Interrupted = walkLogicalAccessChain(
       *GEP, [&CurType](Type *EltType, uint64_t Index) { CurType = EltType; },
-      [&CurType](Type *EltType, Value *Index, uint64_t) { CurType = EltType; });
+      [&CurType](Type *EltType, Value *Index, uint64_t) {
+        Type *T = getUnpaddedElementType(EltType);
+        CurType = T ? T : EltType;
+      });
 
   return Interrupted ? GEP->getResultElementType() : CurType;
 }
 
 Type *SPIRVEmitIntrinsicsImpl::getGEPType(GetElementPtrInst *Ref) {
+  if (TM.getSubtargetImpl()->isLogicalSPIRV())
+    if (Type *T = getUnpaddedElementType(Ref->getSourceElementType())) {
+      // The second index selects T inside its padded element.
+      if (Ref->getNumIndices() <= 2)
+        return T;
+      SmallVector<Value *> Rest(drop_begin(Ref->indices(), 2));
+      return GetElementPtrInst::getIndexedType(T, Rest);
+    }
   if (getByteAddressingMultiplier(Ref->getSourceElementType()) &&
       TM.getSubtargetImpl()->isLogicalSPIRV()) {
     if (TM.getSubtargetImpl()->usesPhysicalStorageBuffer() &&
@@ -1252,7 +1302,6 @@ Type *SPIRVEmitIntrinsicsImpl::deduceElementTypeHelper(
             Ty = cast<StructType>(Ty)->getElementType(Index);
           }
         }
-        Ty = reconstitutePeeledArrayType(Ty);
       } else {
         llvm_unreachable("Unknown handle type for spv_resource_getpointer.");
       }
@@ -2241,6 +2290,17 @@ SPIRVEmitIntrinsicsImpl::visitGetElementPtrInst(GetElementPtrInst &I) {
     return NewI;
   }
 
+  // Into a peeled array, the padded element is its T, so the index that
+  // selects T inside it is dropped.
+  Type *SrcElemTy = I.getSourceElementType();
+  SmallVector<Value *> GEPIndices(I.indices());
+  if (TM.getSubtargetImpl()->isLogicalSPIRV())
+    if (Type *T = getUnpaddedElementType(SrcElemTy)) {
+      SrcElemTy = T;
+      if (GEPIndices.size() > 1)
+        GEPIndices.erase(GEPIndices.begin() + 1);
+    }
+
   if (TM.getSubtargetImpl()->isLogicalSPIRV() && !isFirstIndexZero(&I)) {
     // Logical SPIR-V cannot use the OpPtrAccessChain instruction. If the first
     // index of the GEP is not 0, then we need to try to adjust it.
@@ -2258,15 +2318,22 @@ SPIRVEmitIntrinsicsImpl::visitGetElementPtrInst(GetElementPtrInst &I) {
     // Look for the array-to-pointer decay. If this is the pattern
     // we can adjust the types, and prepend a 0 to the indices.
     Value *PtrOp = I.getPointerOperand();
-    Type *SrcElemTy = I.getSourceElementType();
     Type *DeducedPointeeTy = deduceElementType(PtrOp, true);
 
-    if (auto *ArrTy = dyn_cast<ArrayType>(DeducedPointeeTy)) {
-      if (ArrTy->getElementType() == SrcElemTy) {
+    Type *DecayedElemTy = nullptr;
+    if (auto *ArrTy = dyn_cast<ArrayType>(DeducedPointeeTy))
+      DecayedElemTy = ArrTy->getElementType();
+    else if (auto *PeeledTy = dyn_cast<StructType>(DeducedPointeeTy)) {
+      uint64_t TotalSize = 0;
+      if (!matchPeeledArrayPattern(PeeledTy, DecayedElemTy, TotalSize))
+        DecayedElemTy = nullptr;
+    }
+    if (DecayedElemTy) {
+      if (DecayedElemTy == SrcElemTy) {
         SmallVector<Value *> NewIndices;
         Type *FirstIdxType = I.getOperand(1)->getType();
         NewIndices.push_back(ConstantInt::get(FirstIdxType, 0));
-        for (Value *Idx : I.indices())
+        for (Value *Idx : GEPIndices)
           NewIndices.push_back(Idx);
 
         SmallVector<Type *, 2> Types = {I.getType(), I.getPointerOperandType()};
@@ -2286,7 +2353,8 @@ SPIRVEmitIntrinsicsImpl::visitGetElementPtrInst(GetElementPtrInst &I) {
   SmallVector<Type *, 2> Types = {I.getType(), I.getOperand(0)->getType()};
   SmallVector<Value *, 4> Args;
   Args.push_back(B.getInt1(I.isInBounds()));
-  llvm::append_range(Args, I.operands());
+  Args.push_back(I.getPointerOperand());
+  llvm::append_range(Args, GEPIndices);
   Instruction *NewI =
       B.CreateIntrinsicWithoutFolding(Intrinsic::spv_gep, {Types}, {Args});
   replaceAllUsesWithAndErase(B, &I, NewI);
@@ -2511,6 +2579,9 @@ void SPIRVEmitIntrinsicsImpl::insertPtrCastOrAssignTypeInstr(Instruction *I,
     // In all cases, fall back to the GEP type if type scavenging failed.
     if (!OpTy)
       OpTy = GEPI->getSourceElementType();
+    if (TM.getSubtargetImpl()->isLogicalSPIRV())
+      if (Type *T = getUnpaddedElementType(OpTy))
+        OpTy = T;
 
     replacePointerOperandWithPtrCast(I, Pointer, OpTy, 0, B);
     if (isNestedPointer(OpTy))

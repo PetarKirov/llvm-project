@@ -991,11 +991,9 @@ Register SPIRVGlobalRegistry::getOrCreateGlobalVariableWithBinding(
 
 // TODO: Double check the calls to getOpTypeArray to make sure that `ElemType`
 // is explicitly laid out when required.
-SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeArray(uint32_t NumElems,
-                                                  SPIRVTypeInst ElemType,
-                                                  MachineIRBuilder &MIRBuilder,
-                                                  bool ExplicitLayoutRequired,
-                                                  bool EmitIR) {
+SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeArray(
+    uint32_t NumElems, SPIRVTypeInst ElemType, MachineIRBuilder &MIRBuilder,
+    bool ExplicitLayoutRequired, bool EmitIR, std::optional<uint32_t> Stride) {
   assert((ElemType->getOpcode() != SPIRV::OpTypeVoid) &&
          "Invalid array element type");
   SPIRVTypeInst SpvTypeInt32 = getOrCreateSPIRVIntegerType(32, MIRBuilder);
@@ -1041,9 +1039,14 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeArray(uint32_t NumElems,
   }
 
   if (ExplicitLayoutRequired && !isResourceType(ElemType)) {
-    Type *ET = const_cast<Type *>(getTypeForSPIRVType(ElemType));
-    addArrayStrideDecorations(ArrayType->defs().begin()->getReg(), ET,
-                              MIRBuilder);
+    if (Stride) {
+      buildOpDecorate(ArrayType->defs().begin()->getReg(), MIRBuilder,
+                      SPIRV::Decoration::ArrayStride, {*Stride});
+    } else {
+      Type *ET = const_cast<Type *>(getTypeForSPIRVType(ElemType));
+      addArrayStrideDecorations(ArrayType->defs().begin()->getReg(), ET,
+                                MIRBuilder);
+    }
   }
 
   return ArrayType;
@@ -1099,14 +1102,19 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
     SPIRV::AccessQualifier::AccessQualifier AccQual,
     StructOffsetDecorator Decorator, bool EmitIR) {
   Type *OriginalElementType = nullptr;
+  Type *PaddedElementType = nullptr;
   uint64_t TotalSize = 0;
-  if (matchPeeledArrayPattern(Ty, OriginalElementType, TotalSize)) {
+  if (matchPeeledArrayPattern(Ty, OriginalElementType, TotalSize,
+                              &PaddedElementType)) {
+    // The array's elements are the original type; the padding is only the
+    // distance between them, so it becomes the stride, never a member.
     SPIRVTypeInst ElementSPIRVType = findSPIRVType(
         OriginalElementType, MIRBuilder, AccQual,
         /* ExplicitLayoutRequired= */ Decorator != nullptr, EmitIR);
-    return getOpTypeArray(TotalSize, ElementSPIRVType, MIRBuilder,
-                          /*ExplicitLayoutRequired=*/Decorator != nullptr,
-                          EmitIR);
+    return getOpTypeArray(
+        TotalSize, ElementSPIRVType, MIRBuilder,
+        /*ExplicitLayoutRequired=*/Decorator != nullptr, EmitIR,
+        static_cast<uint32_t>(DL.getTypeAllocSize(PaddedElementType)));
   }
 
   const SPIRVSubtarget &ST =
