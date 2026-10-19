@@ -64,6 +64,9 @@ class SPIRVGlobalRegistry : public SPIRVIRMapping {
   // Struct types decorated with Block, recorded at the point the decoration
   // is emitted.
   DenseSet<SPIRVTypeInst> BlockDecoratedTypes;
+  // Explicitly laid-out structs whose spirv.Padding members are dropped, with
+  // their LLVM type, to number a member among the others.
+  DenseMap<SPIRVTypeInst, const StructType *> PaddedStructs;
 
   // Stores for each function the last inserted SPIR-V Type.
   // See: SPIRVGlobalRegistry::createOpType.
@@ -698,6 +701,11 @@ public:
                               bool IsWritable, bool EmitIr = false);
 
   SPIRVTypeInst getOrCreatePaddingType(MachineIRBuilder &MIRBuilder);
+
+  // The SPIR-V index of LLVM member `Index` of `StructTy`, if its padding
+  // members were dropped; else none, and the index stands.
+  std::optional<unsigned> memberIndexOf(SPIRVTypeInst StructTy,
+                                        unsigned Index) const;
 
   // The unsigned twin of a signed integer or integer vector type, or the type
   // itself if it is not signed.

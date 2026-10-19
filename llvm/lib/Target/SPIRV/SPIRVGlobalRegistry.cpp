@@ -1130,7 +1130,12 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
       cast<SPIRVSubtarget>(MIRBuilder.getMF().getSubtarget());
   SmallVector<Register, 4> FieldTypes;
   constexpr unsigned MaxWordCount = UINT16_MAX;
-  const size_t NumElements = Ty->getNumElements();
+  // Laid out explicitly, the padding is distance, not a member.
+  const bool DropPadding = Decorator != nullptr && hasPaddingMembers(Ty);
+  const size_t NumElements =
+      DropPadding ? count_if(Ty->elements(),
+                             [](Type *E) { return !isSpirvPaddingType(E); })
+                  : Ty->getNumElements();
 
   size_t MaxNumElements = MaxWordCount - 2;
   size_t SPIRVStructNumElements = NumElements;
@@ -1141,6 +1146,8 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
   }
 
   for (const auto &Elem : Ty->elements()) {
+    if (DropPadding && isSpirvPaddingType(Elem))
+      continue;
     SPIRVTypeInst ElemTy = findSPIRVType(
         toTypedPointer(Elem), MIRBuilder, AccQual,
         /* ExplicitLayoutRequired= */ Decorator != nullptr, EmitIR);
@@ -1173,8 +1180,19 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
 
   if (Decorator)
     Decorator(SPVType->defs().begin()->getReg());
+  if (DropPadding)
+    PaddedStructs[SPVType] = Ty;
 
   return SPVType;
+}
+
+std::optional<unsigned>
+SPIRVGlobalRegistry::memberIndexOf(SPIRVTypeInst StructTy,
+                                   unsigned Index) const {
+  auto It = PaddedStructs.find(StructTy);
+  if (It == PaddedStructs.end())
+    return std::nullopt;
+  return memberIndexWithoutPadding(It->second, Index);
 }
 
 SPIRVTypeInst SPIRVGlobalRegistry::getOrCreateSpecialType(
@@ -1766,9 +1784,11 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOrCreateLayoutType(
   ArrayRef<uint32_t> Offsets = T->int_params().slice(1);
   assert(ST->getNumElements() == Offsets.size());
 
-  StructOffsetDecorator Decorator = [&MIRBuilder, &Offsets](Register Reg) {
-    for (uint32_t I = 0; I < Offsets.size(); ++I) {
-      buildOpMemberDecorate(Reg, MIRBuilder, SPIRV::Decoration::Offset, I,
+  StructOffsetDecorator Decorator = [&MIRBuilder, &Offsets, ST](Register Reg) {
+    for (uint32_t I = 0, M = 0; I < Offsets.size(); ++I) {
+      if (isSpirvPaddingType(ST->getElementType(I)))
+        continue;
+      buildOpMemberDecorate(Reg, MIRBuilder, SPIRV::Decoration::Offset, M++,
                             {Offsets[I]});
     }
   };
@@ -2505,8 +2525,10 @@ void SPIRVGlobalRegistry::updateAssignType(CallInst *AssignCI, Value *Arg,
 void SPIRVGlobalRegistry::addStructOffsetDecorations(
     Register Reg, StructType *Ty, MachineIRBuilder &MIRBuilder) {
   ArrayRef<TypeSize> Offsets = DL.getStructLayout(Ty)->getMemberOffsets();
-  for (uint32_t I = 0; I < Ty->getNumElements(); ++I) {
-    buildOpMemberDecorate(Reg, MIRBuilder, SPIRV::Decoration::Offset, I,
+  for (uint32_t I = 0, M = 0; I < Ty->getNumElements(); ++I) {
+    if (isSpirvPaddingType(Ty->getElementType(I)))
+      continue;
+    buildOpMemberDecorate(Reg, MIRBuilder, SPIRV::Decoration::Offset, M++,
                           {static_cast<uint32_t>(Offsets[I])});
   }
 }

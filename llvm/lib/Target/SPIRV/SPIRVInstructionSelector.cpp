@@ -6797,6 +6797,23 @@ bool SPIRVInstructionSelector::selectResourceGetPointer(Register &ResVReg,
 
   if (I.getNumExplicitOperands() > 3) {
     Register IndexReg = I.getOperand(3).getReg();
+    // A member of a block whose padding members were dropped is numbered
+    // among the others.
+    SPIRVTypeInst Wrapper = GR.getPointeeType(RegType);
+    SPIRVTypeInst Block =
+        Wrapper && Wrapper->getOpcode() == SPIRV::OpTypeStruct
+            ? GR.getSPIRVTypeForVReg(Wrapper->getOperand(1).getReg())
+            : SPIRVTypeInst();
+    if (Block) {
+      // getDefInstrMaybeConstant looks through, and rewrites, its argument:
+      // probe a copy, so a dynamic index stays the register it was.
+      Register ConstReg = IndexReg;
+      if (MachineInstr *Def = getDefInstrMaybeConstant(ConstReg, MRI);
+          Def && Def->getOpcode() == TargetOpcode::G_CONSTANT)
+        if (std::optional<unsigned> M =
+                GR.memberIndexOf(Block, getIConstVal(ConstReg, MRI)))
+          IndexReg = buildI32Constant(*M, I);
+    }
     MIB.addUse(IndexReg);
   }
   MIB.constrainAllUses(TII, TRI, RBI);
