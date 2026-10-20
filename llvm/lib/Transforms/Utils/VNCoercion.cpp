@@ -354,6 +354,19 @@ static Value *getStoreValueForLoadHelper(Value *SrcVal, unsigned Offset,
       (DL.getTypeSizeInBits(SrcVal->getType()).getFixedValue() + 7) / 8;
   uint64_t LoadSize = (DL.getTypeSizeInBits(LoadTy).getFixedValue() + 7) / 8;
 
+  // A load of one whole element of a fixed vector reads that element: extract
+  // it, rather than reading it out of an integer as wide as the vector, which
+  // the target may not have (SPIR-V has no 128-bit integer for a <4 x float>).
+  // Byte vectors take the bit-extract path below, which keeps their poison.
+  auto *VT = dyn_cast<FixedVectorType>(SrcTy);
+  if (VT && !SrcTy->isByteOrByteVectorTy()) {
+    Type *EltTy = VT->getElementType();
+    const uint64_t EltSize = DL.getTypeStoreSize(EltTy).getFixedValue();
+    if (!EltTy->isPointerTy() && DL.typeSizeEqualsStoreSize(EltTy) &&
+        LoadSize == EltSize && Offset % EltSize == 0)
+      return Builder.CreateExtractElement(SrcVal, Offset / EltSize);
+  }
+
   // Shift the bits to the least significant depending on endianness.
   unsigned ShiftAmt;
   if (DL.isLittleEndian())

@@ -8,17 +8,12 @@ define <4 x float> @ConvertVectors_ByRef(ptr %loc) {
 ; CHECK-NEXT:    [[LOAD_VEC:%.*]] = load <4 x float>, ptr [[LOC]], align 16
 ; CHECK-NEXT:    [[SHUF:%.*]] = shufflevector <4 x float> [[LOAD_VEC]], <4 x float> poison, <4 x i32> <i32 0, i32 poison, i32 poison, i32 poison>
 ; CHECK-NEXT:    [[GEP1:%.*]] = getelementptr inbounds [4 x float], ptr [[LOC]], i64 0, i64 1
-; CHECK-NEXT:    [[TMP1:%.*]] = bitcast <4 x float> [[LOAD_VEC]] to i128
-; CHECK-NEXT:    [[TMP2:%.*]] = lshr i128 [[TMP1]], 32
-; CHECK-NEXT:    [[TMP3:%.*]] = trunc i128 [[TMP2]] to i32
-; CHECK-NEXT:    [[TMP4:%.*]] = bitcast i32 [[TMP3]] to float
-; CHECK-NEXT:    [[INS1:%.*]] = insertelement <4 x float> [[SHUF]], float [[TMP4]], i64 1
+; CHECK-NEXT:    [[TMP1:%.*]] = extractelement <4 x float> [[LOAD_VEC]], i64 1
+; CHECK-NEXT:    [[INS1:%.*]] = insertelement <4 x float> [[SHUF]], float [[TMP1]], i64 1
 ; CHECK-NEXT:    [[GEP2:%.*]] = getelementptr inbounds [4 x float], ptr [[LOC]], i64 0, i64 2
-; CHECK-NEXT:    [[TMP5:%.*]] = lshr i128 [[TMP1]], 64
-; CHECK-NEXT:    [[TMP6:%.*]] = trunc i128 [[TMP5]] to i32
-; CHECK-NEXT:    [[TMP7:%.*]] = bitcast i32 [[TMP6]] to float
-; CHECK-NEXT:    [[INS2:%.*]] = insertelement <4 x float> [[INS1]], float [[TMP7]], i64 2
-; CHECK-NEXT:    [[INS3:%.*]] = insertelement <4 x float> [[INS2]], float [[TMP7]], i64 3
+; CHECK-NEXT:    [[TMP2:%.*]] = extractelement <4 x float> [[LOAD_VEC]], i64 2
+; CHECK-NEXT:    [[INS2:%.*]] = insertelement <4 x float> [[INS1]], float [[TMP2]], i64 2
+; CHECK-NEXT:    [[INS3:%.*]] = insertelement <4 x float> [[INS2]], float [[TMP2]], i64 3
 ; CHECK-NEXT:    ret <4 x float> [[INS3]]
 ;
   %load_vec = load <4 x float>, ptr %loc, align 16
@@ -267,10 +262,9 @@ define i16 @load_subvector_different_type2(ptr %loc, <8 x i32> %v) {
 ; CHECK-SAME: (ptr [[LOC:%.*]], <8 x i32> [[V:%.*]]) {
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    store <8 x i32> [[V]], ptr [[LOC]], align 32
-; CHECK-NEXT:    [[TMP0:%.*]] = bitcast <8 x i32> [[V]] to i256
-; CHECK-NEXT:    [[TMP1:%.*]] = trunc i256 [[TMP0]] to i32
-; CHECK-NEXT:    [[TMP2:%.*]] = bitcast i32 [[TMP1]] to <2 x i16>
-; CHECK-NEXT:    [[R:%.*]] = extractelement <2 x i16> [[TMP2]], i32 1
+; CHECK-NEXT:    [[TMP0:%.*]] = extractelement <8 x i32> [[V]], i64 0
+; CHECK-NEXT:    [[TMP1:%.*]] = bitcast i32 [[TMP0]] to <2 x i16>
+; CHECK-NEXT:    [[R:%.*]] = extractelement <2 x i16> [[TMP1]], i32 1
 ; CHECK-NEXT:    ret i16 [[R]]
 ;
   entry:
