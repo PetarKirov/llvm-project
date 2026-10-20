@@ -200,7 +200,13 @@ class SPIRVLegalizePointerCastImpl {
       if (auto *ST = dyn_cast<StructType>(CurrentTy)) {
         if (ST->getNumElements() == 0)
           return std::nullopt;
-        CurrentTy = ST->getTypeAtIndex(0u);
+        // A peeled array is one array: its first element is one index in.
+        Type *ElemTy = nullptr;
+        uint64_t TotalSize = 0;
+        if (matchPeeledArrayPattern(ST, ElemTy, TotalSize))
+          CurrentTy = ElemTy;
+        else
+          CurrentTy = ST->getTypeAtIndex(0u);
       } else if (auto *AT = dyn_cast<ArrayType>(CurrentTy)) {
         CurrentTy = AT->getElementType();
       } else if (auto *VT = dyn_cast<FixedVectorType>(CurrentTy)) {
