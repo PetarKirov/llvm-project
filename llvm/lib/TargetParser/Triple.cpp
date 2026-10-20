@@ -657,7 +657,9 @@ Triple::ArchType Triple::parseArch(StringRef ArchName) {
           .Case("hsail64", Triple::hsail64)
           .Case("spir", Triple::spir)
           .Case("spir64", Triple::spir64)
-          .Cases({"spirv", "spirv1.5", "spirv1.6"}, Triple::spirv)
+          .Cases({"spirv", "spirv1.0", "spirv1.1", "spirv1.2", "spirv1.3",
+                  "spirv1.4", "spirv1.5", "spirv1.6"},
+                 Triple::spirv)
           .Cases({"spirv32", "spirv32v1.0", "spirv32v1.1", "spirv32v1.2",
                   "spirv32v1.3", "spirv32v1.4", "spirv32v1.5", "spirv32v1.6"},
                  Triple::spirv32)
@@ -1647,6 +1649,10 @@ VersionTuple Triple::getVulkanVersion() const {
   SubArchType SpirvVersion = getSubArch();
 
   llvm::DenseMap<VersionTuple, SubArchType> ValidVersionMap = {
+      // Vulkan 1.0 -> SPIR-V 1.0.
+      {VersionTuple(1, 0), SPIRVSubArch_v10},
+      // Vulkan 1.1 -> SPIR-V 1.3.
+      {VersionTuple(1, 1), SPIRVSubArch_v13},
       // Vulkan 1.2 -> SPIR-V 1.5.
       {VersionTuple(1, 2), SPIRVSubArch_v15},
       // Vulkan 1.3 -> SPIR-V 1.6.
