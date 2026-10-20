@@ -483,6 +483,21 @@ TEST(TripleTest, ParsedIDs) {
   EXPECT_EQ(VersionTuple(1, 3), T.getVulkanVersion());
   EXPECT_EQ(Triple::Compute, T.getEnvironment());
 
+  T = Triple("spirv1.3-unknown-vulkan1.1-compute");
+  EXPECT_EQ(Triple::spirv, T.getArch());
+  EXPECT_EQ(Triple::SPIRVSubArch_v13, T.getSubArch());
+  EXPECT_EQ(Triple::Vulkan, T.getOS());
+  EXPECT_EQ(VersionTuple(1, 1), T.getVulkanVersion());
+
+  T = Triple("spirv1.0-unknown-vulkan1.0-compute");
+  EXPECT_EQ(Triple::spirv, T.getArch());
+  EXPECT_EQ(Triple::SPIRVSubArch_v10, T.getSubArch());
+  EXPECT_EQ(VersionTuple(1, 0), T.getVulkanVersion());
+
+  // Vulkan 1.1 consumes SPIR-V up to 1.3, not 1.6.
+  T = Triple("spirv1.6-unknown-vulkan1.1-compute");
+  EXPECT_EQ(VersionTuple(0), T.getVulkanVersion());
+
   T = Triple("dxilv1.0--shadermodel6.0-pixel");
   EXPECT_EQ(Triple::dxil, T.getArch());
   EXPECT_EQ(Triple::DXILSubArch_v1_0, T.getSubArch());
