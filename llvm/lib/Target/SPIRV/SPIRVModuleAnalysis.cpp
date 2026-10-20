@@ -299,6 +299,27 @@ static void appendDecorationsForReg(const MachineRegisterInfo &MRI, Register R,
   }
 }
 
+// Appends the signature of the OpName and OpMemberName instructions that name
+// R to Signature, if R's members are named: a frontend names the members of a
+// struct whose names reach the module's consumer, such as an interface block
+// read by reflection or translated to a shading language.
+static void appendNamesForReg(const MachineRegisterInfo &MRI, Register R,
+                              InstrSignature &Signature) {
+  if (none_of(MRI.use_instructions(R), [](const MachineInstr &UseMI) {
+        return UseMI.getOpcode() == SPIRV::OpMemberName;
+      }))
+    return;
+  for (MachineInstr &UseMI : MRI.use_instructions(R)) {
+    if (UseMI.getOpcode() != SPIRV::OpName &&
+        UseMI.getOpcode() != SPIRV::OpMemberName)
+      continue;
+    Signature.push_back(UseMI.getOpcode());
+    for (const MachineOperand &MO : UseMI.operands())
+      if (!MO.isReg())
+        Signature.push_back(hash_value(MO));
+  }
+}
+
 // Returns a representation of an instruction as a vector of MachineOperand
 // hash values, see llvm::hash_value(const MachineOperand &MO) for details.
 // This creates a signature of the instruction with the same content
@@ -359,6 +380,12 @@ static InstrSignature instrToSignature(const MachineInstr &MI,
     // identical instruction with different decorations cannot be merged. That
     // is why we add the decorations to the signature.
     appendDecorationsForReg(MI.getMF()->getRegInfo(), DefReg, Signature);
+    // Two structs with the same members and named members are two types
+    // when their names differ: merged, one id would carry both OpNames and
+    // both sets of OpMemberNames, and a reflected or translated module would
+    // name one struct after the other.
+    if (MI.getOpcode() == SPIRV::OpTypeStruct)
+      appendNamesForReg(MI.getMF()->getRegInfo(), DefReg, Signature);
   }
   return Signature;
 }
