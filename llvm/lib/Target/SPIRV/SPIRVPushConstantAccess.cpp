@@ -49,6 +49,8 @@ static bool replacePushConstantAccesses(Module &M, SPIRVGlobalRegistry *GR) {
     // The global keeps its name, which a shader's interface is known by:
     // made beside the original, the new one was renamed.
     NewGV->takeName(&GV);
+    // And its metadata: a `spirv.Name` names it where its LLVM name cannot.
+    NewGV->copyMetadata(&GV, 0);
 
     for (User *U : make_early_inc_range(GV.users())) {
       Instruction *I = cast<Instruction>(U);
