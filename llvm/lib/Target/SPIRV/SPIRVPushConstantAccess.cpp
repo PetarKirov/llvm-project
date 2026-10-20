@@ -46,6 +46,9 @@ static bool replacePushConstantAccesses(Module &M, SPIRVGlobalRegistry *GR) {
                            /* InsertBefore= */ &GV, GV.getThreadLocalMode(),
                            GV.getAddressSpace(), GV.isExternallyInitialized());
     NewGV->setVisibility(GV.getVisibility());
+    // The global keeps its name, which a shader's interface is known by:
+    // made beside the original, the new one was renamed.
+    NewGV->takeName(&GV);
 
     for (User *U : make_early_inc_range(GV.users())) {
       Instruction *I = cast<Instruction>(U);
