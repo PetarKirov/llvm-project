@@ -1106,6 +1106,27 @@ static void buildOpMemberNames(const StructType *Ty, Register ResVReg,
   }
 }
 
+// A struct's name in the shader's interface, where its LLVM name cannot be:
+// LLVM names a type uniquely, and a frontend may need two types of one name
+// (a struct that is a block and a member of another). One node per struct in
+// the module's `spirv.TypeNames` metadata, `!{<struct> poison, !"name"}`;
+// absent, the LLVM name.
+static StringRef getInterfaceTypeName(const StructType *Ty,
+                                      MachineIRBuilder &MIRBuilder) {
+  const Module *M = MIRBuilder.getMF().getFunction().getParent();
+  if (const NamedMDNode *Names = M->getNamedMetadata("spirv.TypeNames"))
+    for (const MDNode *Node : Names->operands()) {
+      if (Node->getNumOperands() != 2)
+        continue;
+      const auto *Key = dyn_cast<ConstantAsMetadata>(Node->getOperand(0));
+      if (!Key || Key->getValue()->getType() != Ty)
+        continue;
+      if (const auto *Name = dyn_cast<MDString>(Node->getOperand(1)))
+        return Name->getString();
+    }
+  return Ty->hasName() ? Ty->getName() : StringRef();
+}
+
 SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
     const StructType *Ty, MachineIRBuilder &MIRBuilder,
     SPIRV::AccessQualifier::AccessQualifier AccQual,
@@ -1156,8 +1177,8 @@ SPIRVTypeInst SPIRVGlobalRegistry::getOpTypeStruct(
     FieldTypes.push_back(getSPIRVTypeID(ElemTy));
   }
   Register ResVReg = createTypeVReg(MIRBuilder);
-  if (Ty->hasName())
-    buildOpName(ResVReg, Ty->getName(), MIRBuilder);
+  if (StringRef Name = getInterfaceTypeName(Ty, MIRBuilder); !Name.empty())
+    buildOpName(ResVReg, Name, MIRBuilder);
   buildOpMemberNames(Ty, ResVReg, MIRBuilder);
   if (Ty->isPacked() && !ST.isShader())
     buildOpDecorate(ResVReg, MIRBuilder, SPIRV::Decoration::CPacked, {});
