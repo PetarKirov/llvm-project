@@ -352,6 +352,18 @@ static Value *getStoreValueForLoadHelper(Value *SrcVal, unsigned Offset,
   uint64_t StoreSize =
       (DL.getTypeSizeInBits(SrcVal->getType()).getFixedValue() + 7) / 8;
   uint64_t LoadSize = (DL.getTypeSizeInBits(LoadTy).getFixedValue() + 7) / 8;
+
+  // A load of one whole element of a fixed vector reads that element: extract
+  // it, rather than reading it out of an integer as wide as the vector, which
+  // the target may not have (SPIR-V has no 128-bit integer for a <4 x float>).
+  if (auto *VT = dyn_cast<FixedVectorType>(SrcVal->getType())) {
+    Type *EltTy = VT->getElementType();
+    const uint64_t EltSize = DL.getTypeStoreSize(EltTy).getFixedValue();
+    if (!EltTy->isPointerTy() && DL.typeSizeEqualsStoreSize(EltTy) &&
+        LoadSize == EltSize && Offset % EltSize == 0)
+      return Builder.CreateExtractElement(SrcVal, Offset / EltSize);
+  }
+
   // Compute which bits of the stored value are being used by the load.  Convert
   // to an integer type to start with.
   if (SrcVal->getType()->isPtrOrPtrVectorTy())
