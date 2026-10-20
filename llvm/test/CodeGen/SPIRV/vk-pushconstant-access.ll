@@ -4,6 +4,7 @@
 %struct.S = type <{ float }>
 
 ; CHECK-NOT: OpCapability Linkage
+; CHECK-DAG: OpName %[[#PCS:]] "pcs"
 
 ; CHECK-DAG: %[[#F32:]] = OpTypeFloat 32
 ; CHECK-DAG: %[[#UINT:]] = OpTypeInt 32 0
@@ -18,7 +19,7 @@
 
 
 @pcs = external hidden addrspace(13) externally_initialized global %struct.S, align 1
-; CHECK: %[[#PCS:]] = OpVariable %[[#PTR_PCS_S]] PushConstant
+; CHECK: %[[#PCS]] = OpVariable %[[#PTR_PCS_S]] PushConstant
 
 define void @main() #1 {
 entry:
