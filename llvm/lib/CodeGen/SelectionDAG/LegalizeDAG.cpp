@@ -4884,6 +4884,19 @@ void SelectionDAGLegalize::ConvertNodeToLibcall(SDNode *Node) {
                             ? RTLIB::getSINCOS(VT)
                             : RTLIB::getSINCOSPI(VT);
     bool Expanded = TLI.expandMultipleResultFPLibCall(DAG, LC, Node, Results);
+    if (!Expanded && Node->getOpcode() == ISD::FSINCOS &&
+        DAG.getLibcalls().getLibcallImpl(RTLIB::getSIN(VT)) !=
+            RTLIB::Unsupported &&
+        DAG.getLibcalls().getLibcallImpl(RTLIB::getCOS(VT)) !=
+            RTLIB::Unsupported) {
+      // No sincos for this type: fall back on separate sin and cos, as
+      // softening does.
+      SDValue Op = Node->getOperand(0);
+      SDNodeFlags Flags = Node->getFlags();
+      Results.push_back(DAG.getNode(ISD::FSIN, dl, VT, Op, Flags));
+      Results.push_back(DAG.getNode(ISD::FCOS, dl, VT, Op, Flags));
+      Expanded = true;
+    }
     if (!Expanded) {
       DAG.getContext()->emitError(Twine("no libcall available for ") +
                                   Node->getOperationName(&DAG));
