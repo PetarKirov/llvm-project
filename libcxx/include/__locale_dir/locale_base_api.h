@@ -140,6 +140,15 @@
 #      include <__locale_dir/locale_base_api/ibm.h>
 #    endif
 
+// The platforms on this path whose C library has no ctype rune table of its
+// own, as __cxx03/__config lists them; the others define it in their support
+// header.
+#    if defined(__wasi__) || defined(__NuttX__)
+#      define _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE 1
+#    else
+#      define _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE 0
+#    endif
+
 #    include <__locale_dir/locale_base_api/bsd_locale_fallbacks.h>
 
 #    include <__cstddef/size_t.h>
