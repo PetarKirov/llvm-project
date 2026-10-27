@@ -201,10 +201,13 @@ bool DebugHandlerBase::isUnsignedDIType(const DIType *Ty) {
 
   if (auto *CTy = dyn_cast<DICompositeType>(Ty)) {
     if (CTy->getTag() == dwarf::DW_TAG_enumeration_type) {
-      if (!(Ty = CTy->getBaseType()))
-        // FIXME: Enums without a fixed underlying type have unknown signedness
-        // here, leading to incorrectly emitted constants.
-        return false;
+      // The base may itself be an enumeration (D allows `enum A : B`), so
+      // look through it rather than casting it to a basic type below.
+      if (const DIType *BaseTy = CTy->getBaseType())
+        return isUnsignedDIType(BaseTy);
+      // FIXME: Enums without a fixed underlying type have unknown signedness
+      // here, leading to incorrectly emitted constants.
+      return false;
     } else
       // (Pieces of) aggregate types that get hacked apart by SROA may be
       // represented by a constant. Encode them as unsigned bytes.
