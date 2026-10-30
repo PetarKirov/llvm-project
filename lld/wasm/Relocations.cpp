@@ -132,7 +132,9 @@ void scanRelocations(InputChunk *chunk) {
                 " cannot be used against non-TLS symbol `" + toString(*sym) +
                 "`");
         }
-        if (auto *D = dyn_cast<DefinedData>(sym)) {
+        // A synthetic data symbol (`__stack_high`, `__heap_base`, ...) has
+        // no segment; the non-TLS error above already reports it.
+        if (auto *D = dyn_cast<DefinedData>(sym); D && D->segment) {
           if (!D->segment->outputSeg->isTLS()) {
             error(toString(file) + ": relocation " +
                   relocTypeToString(reloc.Type) + " cannot be used against `" +
