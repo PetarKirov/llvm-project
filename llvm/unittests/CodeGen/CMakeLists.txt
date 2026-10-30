@@ -54,6 +54,7 @@ add_llvm_unittest(CodeGenTests
   SelectionDAGPatternMatchTest.cpp
   SlotIndexesTest.cpp
   TypeTraitsTest.cpp
+  TargetLoweringObjectFileTest.cpp
   TargetOptionsTest.cpp
   TestAsmPrinter.cpp
   X86MCInstLowerTest.cpp

@@ -309,6 +309,10 @@ void TargetLoweringObjectFileELF::initialize(MCContext &Ctx,
     break;
   }
 
+  // The set names the globals of the module being emitted: one object file
+  // lowers many modules in turn, and a stale entry would match a new global
+  // allocated at a freed one's address.
+  Used.clear();
   SmallVector<GlobalValue *, 4> Vec;
   collectUsedGlobalVariables(M, Vec, false);
   for (GlobalValue *GV : Vec)
@@ -2307,6 +2311,8 @@ void TargetLoweringObjectFileWasm::initialize(MCContext &Ctx,
                                               const Module &M) {
   TargetLoweringObjectFile::initialize(Ctx, TM, M);
 
+  // As for ELF: only this module's globals are used.
+  Used.clear();
   SmallVector<GlobalValue *, 4> Vec;
   collectUsedGlobalVariables(M, Vec, false);
   for (GlobalValue *GV : Vec)
